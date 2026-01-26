@@ -13,6 +13,7 @@ maillog.db
 maillog.db-shm
 maillog.db-wal
 maillogdb
+
 # Test binary, built with `go test -c`
 *.test
 
