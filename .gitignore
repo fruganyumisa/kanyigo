@@ -7,7 +7,12 @@
 *.dll
 *.so
 *.dylib
-
+logsmaildb
+maillog
+maillog.db 
+maillog.db-shm
+maillog.db-wal
+maillogdb
 # Test binary, built with `go test -c`
 *.test
 
