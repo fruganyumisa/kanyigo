@@ -1,5 +1,5 @@
 <p align=right>
-<a href="https://pkg.go.dev/github.com/palantir/tenablesc-client"><img src="https://pkg.go.dev/badge/github.com/palantir/tenablesc-client.svg" alt="Go Reference"></a>
+<a href="https://pkg.go.dev/github.com/fruganyumisa/kanyigo"><img src="https://pkg.go.dev/badge/github.com/palantir/tenablesc-client.svg" alt="Go Reference"></a>
 </p> 
   
 # Mail Log Dashboard API
