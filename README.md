@@ -1,3 +1,7 @@
+<p align=right>
+<a href="https://pkg.go.dev/github.com/palantir/tenablesc-client"><img src="https://pkg.go.dev/badge/github.com/palantir/tenablesc-client.svg" alt="Go Reference"></a>
+</p> 
+  
 # Mail Log Dashboard API
 
 Simple Go service that ingests `/var/log/maillog` (Postfix-style syslog) into SQLite and exposes a read-only API for a tracking center UI.
