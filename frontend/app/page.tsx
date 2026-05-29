@@ -2,24 +2,23 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
-  Mail,
-  Users,
-  LogOut,
-  Search,
-  Filter,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Shield,
   Clock,
-  CheckCircle2,
-  AlertTriangle,
-  XCircle,
-  Activity,
-  UserPlus,
   Eye,
   EyeOff,
+  Filter,
   Loader2,
-  cn,
+  LogOut,
+  Mail,
+  Search,
+  Shield,
+  UserPlus,
+  Users,
+  XCircle,
 } from "@/components/icons";
 
 type LogRecord = {
@@ -81,27 +80,22 @@ export default function Dashboard() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
-  const [newUser, setNewUser] = useState({
-    email: "",
-    password: "",
-    role: "user" as User["role"],
-  });
+  const [newUser, setNewUser] = useState({ email: "", password: "", role: "user" as User["role"] });
   const [userError, setUserError] = useState("");
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [filters, setFilters] = useState<Filters>(initialFilters);
   const [appliedFilters, setAppliedFilters] = useState<Filters>(initialFilters);
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState<LogsResponse>({ total: 0, items: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/me", { cache: "no-store" })
       .then(async (response) => {
-        if (!response.ok) {
-          throw new Error("unauthenticated");
-        }
+        if (!response.ok) throw new Error("unauthenticated");
         return response.json() as Promise<{ user: User }>;
       })
       .then((payload) => setUser(payload.user))
@@ -110,42 +104,32 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!user) {
-      return;
-    }
+    if (!user) return;
 
     const params = new URLSearchParams({
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
     Object.entries(appliedFilters).forEach(([key, value]) => {
-      if (value.trim()) {
-        params.set(key, value.trim());
-      }
+      if (value.trim()) params.set(key, value.trim());
     });
 
     const controller = new AbortController();
     setLoading(true);
     setError("");
 
-    fetch(`/api/logs?${params.toString()}`, {
-      signal: controller.signal,
-    })
+    fetch(`/api/logs?${params.toString()}`, { signal: controller.signal })
       .then(async (response) => {
         if (response.status === 401) {
           setUser(null);
           throw new Error("Session expired. Sign in again.");
         }
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
+        if (!response.ok) throw new Error(await response.text());
         return response.json() as Promise<LogsResponse>;
       })
       .then(setData)
       .catch((err: Error) => {
-        if (err.name !== "AbortError") {
-          setError(err.message || "Unable to load mail logs.");
-        }
+        if (err.name !== "AbortError") setError(err.message || "Unable to load mail logs.");
       })
       .finally(() => setLoading(false));
 
@@ -164,19 +148,24 @@ export default function Dashboard() {
   const stats = useMemo(() => {
     const sent = data.items.filter((item) => item.status === "sent").length;
     const deferred = data.items.filter((item) => item.status === "deferred").length;
-    const avgDelay =
-      data.items.reduce((sum, item) => sum + (item.delay ?? 0), 0) /
-      Math.max(
-        data.items.filter((item) => item.delay !== null).length,
-        1
-      );
+    const bounced = data.items.filter((item) => item.status === "bounced").length;
+    const delivered = data.items.filter((item) => item.status === "sent" || item.status === "passed clean").length;
+    const delayCount = data.items.filter((item) => item.delay !== null).length;
+    const avgDelay = data.items.reduce((sum, item) => sum + (item.delay ?? 0), 0) / Math.max(delayCount, 1);
 
     return {
       sent,
       deferred,
+      bounced,
       avgDelay,
+      deliveryRate: data.items.length === 0 ? 0 : (delivered / data.items.length) * 100,
     };
   }, [data.items]);
+
+  const activeFilterCount = Object.values(appliedFilters).filter((value) => value.trim() !== "").length;
+  const latestEventTime = data.items[0]?.tsUtc ? relativeTime(data.items[0].tsUtc) : "No events loaded";
+  const pageStart = data.total === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + PAGE_SIZE, data.total);
 
   function applySearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -188,6 +177,10 @@ export default function Dashboard() {
     setFilters(initialFilters);
     setAppliedFilters(initialFilters);
     setOffset(0);
+  }
+
+  function refreshLogs() {
+    setAppliedFilters({ ...appliedFilters });
   }
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -231,6 +224,7 @@ export default function Dashboard() {
   async function createDashboardUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setUserError("");
+    setIsCreatingUser(true);
     const response = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -239,550 +233,488 @@ export default function Dashboard() {
     if (!response.ok) {
       const payload = await response.json().catch(() => ({ error: "Unable to create user." }));
       setUserError(payload.error ?? "Unable to create user.");
+      setIsCreatingUser(false);
       return;
     }
     setNewUser({ email: "", password: "", role: "user" });
     await loadUsers();
+    setIsCreatingUser(false);
   }
 
-  // Loading State
   if (authLoading) {
     return (
-      <main className="min-h-screen flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative">
-            <div className="w-16 h-16 rounded-full border-4 border-muted" />
-            <div className="absolute top-0 left-0 w-16 h-16 rounded-full border-4 border-accent border-t-transparent animate-spin" />
+      <main className="auth-page">
+        <section className="loading-card">
+          <Loader2 className="icon spin" />
+          <div>
+            <strong>Preparing workspace</strong>
+            <span>Checking your secure dashboard session</span>
           </div>
-          <p className="text-muted-foreground text-sm font-medium">Loading dashboard...</p>
-        </div>
+        </section>
       </main>
     );
   }
 
-  // Login Screen
   if (!user) {
     return (
-      <main className="min-h-screen flex items-center justify-center p-6">
-        <div className="w-full max-w-md">
-          {/* Logo & Header */}
-          <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-accent/20 to-accent/5 border border-accent/20 mb-6">
-              <Mail className="w-8 h-8 text-accent" />
+      <main className="auth-page">
+        <section className="login-shell">
+          <div className="login-brand">
+            <div className="brand-mark">
+              <Mail className="icon-lg" />
             </div>
-            <h1 className="text-3xl font-bold tracking-tight mb-2 text-balance">Mail Log Dashboard</h1>
-            <p className="text-muted-foreground">Sign in to access your mail operations</p>
+            <h1>Mail Log Dashboard</h1>
+            <p>Sign in to access mail operations.</p>
           </div>
 
-          {/* Login Card */}
-          <div className="bg-card border border-border rounded-2xl p-8 shadow-2xl shadow-black/20">
-            <form onSubmit={login} className="space-y-6">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">Email address</label>
+          <form className="login-card" onSubmit={login}>
+            <Field label="Email address">
+              <input
+                type="email"
+                value={loginEmail}
+                onChange={(event) => setLoginEmail(event.target.value)}
+                autoComplete="email"
+                placeholder="you@company.com"
+                required
+              />
+            </Field>
+
+            <Field label="Password">
+              <div className="input-with-action">
                 <input
-                  type="email"
-                  value={loginEmail}
-                  onChange={(event) => setLoginEmail(event.target.value)}
-                  autoComplete="email"
+                  type={showPassword ? "text" : "password"}
+                  value={loginPassword}
+                  onChange={(event) => setLoginPassword(event.target.value)}
+                  autoComplete="current-password"
+                  placeholder="Enter your password"
                   required
-                  className="w-full h-12 px-4 rounded-xl bg-input border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all"
-                  placeholder="you@company.com"
                 />
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? <EyeOff className="icon" /> : <Eye className="icon" />}
+                </button>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-muted-foreground">Password</label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={loginPassword}
-                    onChange={(event) => setLoginPassword(event.target.value)}
-                    autoComplete="current-password"
-                    required
-                    className="w-full h-12 px-4 pr-12 rounded-xl bg-input border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all"
-                    placeholder="Enter your password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                  </button>
-                </div>
-              </div>
+            </Field>
 
-              {loginError && (
-                <div className="flex items-center gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm">
-                  <XCircle className="w-5 h-5 shrink-0" />
-                  {loginError}
-                </div>
-              )}
+            {loginError ? <InlineNotice tone="danger" icon={<XCircle className="icon" />} text={loginError} /> : null}
 
-              <button
-                type="submit"
-                disabled={isLoggingIn}
-                className="w-full h-12 rounded-xl bg-accent hover:bg-accent/90 text-accent-foreground font-semibold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isLoggingIn ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Signing in...
-                  </>
-                ) : (
-                  "Sign in"
-                )}
-              </button>
-            </form>
+            <button className="primary-button full" type="submit" disabled={isLoggingIn}>
+              {isLoggingIn ? <Loader2 className="icon spin" /> : null}
+              {isLoggingIn ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+
+          <div className="security-note">
+            <Shield className="icon" />
+            <span>Secure, role-based operational access</span>
           </div>
-
-          <p className="text-center text-muted-foreground text-sm mt-6">
-            Protected by enterprise-grade security
-          </p>
-        </div>
+        </section>
+        <footer className="auth-footer">
+          This design and build is by{" "}
+          <a href="https://techcraft.co.tz" target="_blank" rel="noreferrer">
+            Techcraft
+          </a>
+        </footer>
       </main>
     );
   }
 
-  const pageStart = data.total === 0 ? 0 : offset + 1;
-  const pageEnd = Math.min(offset + PAGE_SIZE, data.total);
-
   return (
-    <main className="min-h-screen">
-      {/* Header */}
-      <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-xl border-b border-border">
-        <div className="max-w-[1600px] mx-auto px-6 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-accent/20 to-accent/5 border border-accent/20">
-                <Mail className="w-5 h-5 text-accent" />
-              </div>
-              <div>
-                <h1 className="text-lg font-bold tracking-tight">Mail Log Dashboard</h1>
-                <p className="text-sm text-muted-foreground">Mail Operations</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <div className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-full bg-card border border-border">
-                <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-                <span className="text-sm font-medium text-muted-foreground">{user.email}</span>
-                {user.role === "admin" && (
-                  <span className="px-2 py-0.5 rounded-md bg-accent/10 text-accent text-xs font-semibold uppercase">
-                    Admin
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={logout}
-                className="flex items-center gap-2 h-10 px-4 rounded-xl bg-card border border-border text-muted-foreground hover:text-foreground hover:border-border/80 transition-all"
-              >
-                <LogOut className="w-4 h-4" />
-                <span className="hidden sm:inline text-sm font-medium">Sign out</span>
-              </button>
-            </div>
+    <main className="app-page">
+      <aside className="app-sidebar">
+        <div className="sidebar-brand">
+          <div className="brand-mark small">
+            <Mail className="icon" />
+          </div>
+          <div className="brand-copy">
+            <h1>Mail Log Dashboard</h1>
+            <p>Mail Operations</p>
           </div>
         </div>
-      </header>
 
-      <div className="max-w-[1600px] mx-auto px-6 py-8">
-        {/* Tabs */}
-        <nav className="flex gap-1 p-1 rounded-xl bg-card border border-border w-fit mb-8">
-          <button
-            onClick={() => setActiveTab("dashboard")}
-            className={cn(
-              "flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all",
-              activeTab === "dashboard"
-                ? "bg-muted text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <Activity className="w-4 h-4" />
-            Dashboard
+        <nav className="sidebar-nav" aria-label="Sections">
+          <button className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>
+            <Activity className="icon" />
+            <span>Dashboard</span>
           </button>
-          {user.role === "admin" && (
-            <button
-              onClick={() => setActiveTab("users")}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all",
-                activeTab === "users"
-                  ? "bg-muted text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Users className="w-4 h-4" />
-              Users
+          {user.role === "admin" ? (
+            <button className={activeTab === "users" ? "active" : ""} onClick={() => setActiveTab("users")}>
+              <Users className="icon" />
+              <span>Users</span>
             </button>
-          )}
+          ) : null}
         </nav>
 
-        {/* Users Tab */}
-        {user.role === "admin" && activeTab === "users" && (
-          <section className="space-y-6">
-            <div className="bg-card border border-border rounded-2xl p-6">
-              <div className="flex items-start justify-between gap-4 mb-6">
-                <div>
-                  <h2 className="text-xl font-bold flex items-center gap-2">
-                    <Shield className="w-5 h-5 text-accent" />
-                    User Management
-                  </h2>
-                  <p className="text-muted-foreground text-sm mt-1">
-                    Create and manage dashboard users with role-based access
-                  </p>
-                </div>
-              </div>
-
-              <form onSubmit={createDashboardUser} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Email</label>
-                  <input
-                    type="email"
-                    value={newUser.email}
-                    onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                    required
-                    className="w-full h-11 px-4 rounded-xl bg-input border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all"
-                    placeholder="user@company.com"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Password</label>
-                  <input
-                    type="password"
-                    value={newUser.password}
-                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                    minLength={8}
-                    required
-                    className="w-full h-11 px-4 rounded-xl bg-input border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all"
-                    placeholder="Min. 8 characters"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Role</label>
-                  <select
-                    value={newUser.role}
-                    onChange={(e) => setNewUser({ ...newUser, role: e.target.value as User["role"] })}
-                    className="w-full h-11 px-4 rounded-xl bg-input border border-border text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all appearance-none cursor-pointer"
-                  >
-                    <option value="user">User</option>
-                    <option value="admin">Admin</option>
-                  </select>
-                </div>
-                <div className="flex items-end">
-                  <button
-                    type="submit"
-                    className="w-full h-11 rounded-xl bg-accent hover:bg-accent/90 text-accent-foreground font-semibold transition-all flex items-center justify-center gap-2"
-                  >
-                    <UserPlus className="w-4 h-4" />
-                    Create User
-                  </button>
-                </div>
-              </form>
-
-              {userError && (
-                <div className="flex items-center gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm mb-6">
-                  <XCircle className="w-5 h-5 shrink-0" />
-                  {userError}
-                </div>
-              )}
-
-              <div className="space-y-2">
-                {users.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center justify-between gap-4 p-4 rounded-xl bg-muted/50 border border-border"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-accent/20 to-accent/5 flex items-center justify-center shrink-0">
-                        <span className="text-accent font-semibold text-sm">
-                          {item.email.charAt(0).toUpperCase()}
-                        </span>
-                      </div>
-                      <span className="text-sm font-medium truncate">{item.email}</span>
-                    </div>
-                    <span
-                      className={cn(
-                        "px-3 py-1 rounded-lg text-xs font-semibold uppercase shrink-0",
-                        item.role === "admin"
-                          ? "bg-accent/10 text-accent"
-                          : "bg-muted text-muted-foreground"
-                      )}
-                    >
-                      {item.role}
-                    </span>
-                  </div>
-                ))}
-                {users.length === 0 && (
-                  <div className="text-center py-12 text-muted-foreground">
-                    No users found
-                  </div>
-                )}
-              </div>
+        <div className="sidebar-footer">
+          <div className="account-card">
+            <span className="status-dot" />
+            <div className="account-copy">
+              <strong>{user.email}</strong>
+              <span>{user.role === "admin" ? "Administrator" : "User"}</span>
             </div>
-          </section>
-        )}
+          </div>
+          <button className="secondary-button full-width" onClick={logout}>
+            <LogOut className="icon" />
+            <span>Sign out</span>
+          </button>
+        </div>
+      </aside>
 
-        {/* Dashboard Tab */}
-        {activeTab === "dashboard" && (
-          <>
-            {/* Stats Grid */}
-            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-              <MetricCard
-                label="Total Records"
-                value={data.total.toLocaleString()}
-                icon={<Activity className="w-5 h-5" />}
-              />
-              <MetricCard
-                label="Sent"
-                value={stats.sent.toLocaleString()}
-                icon={<CheckCircle2 className="w-5 h-5" />}
-                variant="success"
-              />
-              <MetricCard
-                label="Deferred"
-                value={stats.deferred.toLocaleString()}
-                icon={<AlertTriangle className="w-5 h-5" />}
-                variant="warning"
-              />
-              <MetricCard
-                label="Avg. Delay"
-                value={`${stats.avgDelay.toFixed(2)}s`}
-                icon={<Clock className="w-5 h-5" />}
-              />
-            </section>
+      <section className="content-shell">
+        <div className="app-container">
+        <section className="summary-panel">
+          <div className="summary-copy">
+            <div className="summary-badges">
+              <span>Live mail operations</span>
+              <span>Last event: {latestEventTime}</span>
+            </div>
+            <h2>Monitor delivery health and search message flow.</h2>
+            <p>Fast triage for Postfix and Amavis activity with filtered delivery evidence and controlled access.</p>
+          </div>
+          <div className="summary-stats">
+            <MiniStat label="Visible events" value={data.items.length.toLocaleString()} />
+            <MiniStat label="Delivery rate" value={`${stats.deliveryRate.toFixed(0)}%`} />
+          </div>
+        </section>
 
-            {/* Filters */}
-            <section className="bg-card border border-border rounded-2xl p-6 mb-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Filter className="w-4 h-4 text-accent" />
-                <h3 className="font-semibold">Filters</h3>
-              </div>
-              <form onSubmit={applySearch} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Sender</label>
-                  <input
-                    value={filters.sender}
-                    onChange={(e) => setFilters({ ...filters, sender: e.target.value })}
-                    placeholder="user@example.com"
-                    className="w-full h-11 px-4 rounded-xl bg-input border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Receiver</label>
-                  <input
-                    value={filters.receiver}
-                    onChange={(e) => setFilters({ ...filters, receiver: e.target.value })}
-                    placeholder="domain.co.tz"
-                    className="w-full h-11 px-4 rounded-xl bg-input border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Status</label>
-                  <select
-                    value={filters.status}
-                    onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-                    className="w-full h-11 px-4 rounded-xl bg-input border border-border text-foreground focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all appearance-none cursor-pointer"
-                  >
-                    <option value="">Any status</option>
-                    <option value="sent">Sent</option>
-                    <option value="deferred">Deferred</option>
-                    <option value="bounced">Bounced</option>
-                    <option value="passed clean">Passed clean</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground">Search</label>
-                  <div className="relative">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <input
-                      value={filters.q}
-                      onChange={(e) => setFilters({ ...filters, q: e.target.value })}
-                      placeholder="Queue ID, subject..."
-                      className="w-full h-11 pl-11 pr-4 rounded-xl bg-input border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-all"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-end gap-2">
-                  <button
-                    type="submit"
-                    className="flex-1 h-11 rounded-xl bg-accent hover:bg-accent/90 text-accent-foreground font-semibold transition-all"
-                  >
-                    Apply
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetFilters}
-                    className="h-11 px-4 rounded-xl bg-muted border border-border text-muted-foreground hover:text-foreground transition-all"
-                  >
-                    Reset
-                  </button>
-                </div>
-              </form>
-            </section>
+        {activeTab === "dashboard" ? (
+          <DashboardView
+            activeFilterCount={activeFilterCount}
+            data={data}
+            error={error}
+            filters={filters}
+            loading={loading}
+            offset={offset}
+            pageEnd={pageEnd}
+            pageStart={pageStart}
+            stats={stats}
+            onApplySearch={applySearch}
+            onRefresh={refreshLogs}
+            onResetFilters={resetFilters}
+            onSetFilters={setFilters}
+            onSetOffset={setOffset}
+          />
+        ) : null}
 
-            {/* Data Table */}
-            <section className="bg-card border border-border rounded-2xl overflow-hidden">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 border-b border-border">
-                <div>
-                  <h2 className="text-lg font-bold">Delivery Events</h2>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Showing {pageStart.toLocaleString()}-{pageEnd.toLocaleString()} of{" "}
-                    {data.total.toLocaleString()} records
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    disabled={offset === 0 || loading}
-                    onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                    className="flex items-center gap-1 h-10 px-4 rounded-xl bg-muted border border-border text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    Previous
-                  </button>
-                  <button
-                    disabled={offset + PAGE_SIZE >= data.total || loading}
-                    onClick={() => setOffset(offset + PAGE_SIZE)}
-                    className="flex items-center gap-1 h-10 px-4 rounded-xl bg-muted border border-border text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                  >
-                    Next
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              {error && (
-                <div className="flex items-center gap-3 p-4 m-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm">
-                  <XCircle className="w-5 h-5 shrink-0" />
-                  {error}
-                </div>
-              )}
-
-              {loading && (
-                <div className="flex items-center justify-center gap-3 py-12">
-                  <Loader2 className="w-5 h-5 animate-spin text-accent" />
-                  <span className="text-muted-foreground">Loading mail logs...</span>
-                </div>
-              )}
-
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[1000px]">
-                  <thead>
-                    <tr className="border-b border-border bg-muted/50">
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Time
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Status
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Sender
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Receiver
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Queue
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Relay
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Delay
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Subject
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {!loading && data.items.length === 0 ? (
-                      <tr>
-                        <td colSpan={8} className="px-6 py-16 text-center text-muted-foreground">
-                          No matching log records found
-                        </td>
-                      </tr>
-                    ) : (
-                      data.items.map((item) => (
-                        <tr key={item.id} className="hover:bg-muted/30 transition-colors">
-                          <td className="px-6 py-4 text-sm text-muted-foreground whitespace-nowrap">
-                            {formatTime(item.tsUtc)}
-                          </td>
-                          <td className="px-6 py-4">
-                            <StatusBadge status={item.status} />
-                          </td>
-                          <td className="px-6 py-4 text-sm max-w-[200px] truncate" title={item.from}>
-                            {item.from || "-"}
-                          </td>
-                          <td className="px-6 py-4 text-sm max-w-[200px] truncate" title={item.to}>
-                            {item.to || "-"}
-                          </td>
-                          <td className="px-6 py-4 text-sm font-mono text-muted-foreground">
-                            {item.queueId || item.queuedAs || "-"}
-                          </td>
-                          <td className="px-6 py-4 text-sm max-w-[150px] truncate" title={item.relay}>
-                            {item.relay || item.helo || "-"}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-muted-foreground">
-                            {item.delay === null ? "-" : `${item.delay.toFixed(2)}s`}
-                          </td>
-                          <td className="px-6 py-4 text-sm max-w-[200px] truncate" title={item.subject || item.raw}>
-                            {item.subject || item.messageId || "-"}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </>
-        )}
-      </div>
+        {user.role === "admin" && activeTab === "users" ? (
+          <UsersView
+            isCreatingUser={isCreatingUser}
+            newUser={newUser}
+            userError={userError}
+            users={users}
+            onCreateUser={createDashboardUser}
+            onLoadUsers={loadUsers}
+            onSetNewUser={setNewUser}
+          />
+        ) : null}
+        </div>
+      </section>
     </main>
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  icon,
-  variant = "default",
+function DashboardView({
+  activeFilterCount,
+  data,
+  error,
+  filters,
+  loading,
+  offset,
+  pageEnd,
+  pageStart,
+  stats,
+  onApplySearch,
+  onRefresh,
+  onResetFilters,
+  onSetFilters,
+  onSetOffset,
 }: {
-  label: string;
-  value: string;
-  icon: React.ReactNode;
-  variant?: "default" | "success" | "warning";
+  activeFilterCount: number;
+  data: LogsResponse;
+  error: string;
+  filters: Filters;
+  loading: boolean;
+  offset: number;
+  pageEnd: number;
+  pageStart: number;
+  stats: { sent: number; deferred: number; bounced: number; avgDelay: number; deliveryRate: number };
+  onApplySearch: (event: FormEvent<HTMLFormElement>) => void;
+  onRefresh: () => void;
+  onResetFilters: () => void;
+  onSetFilters: (filters: Filters) => void;
+  onSetOffset: (offset: number) => void;
 }) {
   return (
-    <article
-      className={cn(
-        "relative overflow-hidden rounded-2xl border p-6 transition-all hover:shadow-lg hover:shadow-black/10",
-        "bg-card border-border"
-      )}
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-muted-foreground mb-2">{label}</p>
-          <p
-            className={cn(
-              "text-3xl font-bold tracking-tight",
-              variant === "success" && "text-success",
-              variant === "warning" && "text-warning",
-              variant === "default" && "text-foreground"
-            )}
-          >
-            {value}
-          </p>
+    <>
+      <section className="metric-grid">
+        <MetricCard label="Total Records" value={data.total.toLocaleString()} icon={<Activity className="icon" />} />
+        <MetricCard label="Sent" value={stats.sent.toLocaleString()} icon={<CheckCircle2 className="icon" />} tone="success" />
+        <MetricCard label="Deferred" value={stats.deferred.toLocaleString()} icon={<AlertTriangle className="icon" />} tone="warning" />
+        <MetricCard label="Bounced" value={stats.bounced.toLocaleString()} icon={<XCircle className="icon" />} tone="danger" />
+        <MetricCard label="Avg. Delay" value={`${stats.avgDelay.toFixed(2)}s`} icon={<Clock className="icon" />} />
+      </section>
+
+      <section className="panel filter-panel">
+        <div className="panel-toolbar">
+          <div className="panel-title">
+            <Filter className="icon accent" />
+            <h3>Filters</h3>
+            {activeFilterCount > 0 ? <span className="count-badge">{activeFilterCount} active</span> : null}
+          </div>
+          <button className="secondary-button" onClick={onRefresh} disabled={loading}>
+            {loading ? <Loader2 className="icon spin" /> : <Activity className="icon" />}
+            <span>Refresh</span>
+          </button>
         </div>
-        <div
-          className={cn(
-            "flex items-center justify-center w-12 h-12 rounded-xl",
-            variant === "success" && "bg-success/10 text-success",
-            variant === "warning" && "bg-warning/10 text-warning",
-            variant === "default" && "bg-accent/10 text-accent"
+
+        <form className="filter-grid" onSubmit={onApplySearch}>
+          <Field label="Sender">
+            <input
+              value={filters.sender}
+              onChange={(event) => onSetFilters({ ...filters, sender: event.target.value })}
+              placeholder="user@example.com"
+            />
+          </Field>
+          <Field label="Receiver">
+            <input
+              value={filters.receiver}
+              onChange={(event) => onSetFilters({ ...filters, receiver: event.target.value })}
+              placeholder="domain.co.tz"
+            />
+          </Field>
+          <Field label="Status">
+            <select value={filters.status} onChange={(event) => onSetFilters({ ...filters, status: event.target.value })}>
+              <option value="">Any status</option>
+              <option value="sent">Sent</option>
+              <option value="deferred">Deferred</option>
+              <option value="bounced">Bounced</option>
+              <option value="passed clean">Passed clean</option>
+            </select>
+          </Field>
+          <Field label="Search">
+            <div className="input-with-icon">
+              <Search className="icon" />
+              <input
+                value={filters.q}
+                onChange={(event) => onSetFilters({ ...filters, q: event.target.value })}
+                placeholder="Queue ID, subject..."
+              />
+            </div>
+          </Field>
+          <div className="filter-actions">
+            <button className="primary-button" type="submit">Apply</button>
+            <button className="secondary-button" type="button" onClick={onResetFilters}>Reset</button>
+          </div>
+        </form>
+      </section>
+
+      <section className="panel table-panel">
+        <div className="table-toolbar">
+          <div>
+            <h3>Delivery Events</h3>
+            <p>
+              Showing {pageStart.toLocaleString()}-{pageEnd.toLocaleString()} of {data.total.toLocaleString()} records
+            </p>
+          </div>
+          <div className="pager">
+            <button className="secondary-button" disabled={offset === 0 || loading} onClick={() => onSetOffset(Math.max(0, offset - PAGE_SIZE))}>
+              <ChevronLeft className="icon" />
+              <span>Previous</span>
+            </button>
+            <button className="secondary-button" disabled={offset + PAGE_SIZE >= data.total || loading} onClick={() => onSetOffset(offset + PAGE_SIZE)}>
+              <span>Next</span>
+              <ChevronRight className="icon" />
+            </button>
+          </div>
+        </div>
+
+        {error ? <InlineNotice tone="danger" icon={<XCircle className="icon" />} text={error} /> : null}
+        {loading ? <InlineNotice icon={<Loader2 className="icon spin" />} text="Loading mail logs..." /> : null}
+
+        <div className="table-scroll">
+          <table className="events-table">
+            <colgroup>
+              <col className="col-time" />
+              <col className="col-status" />
+              <col className="col-sender" />
+              <col className="col-receiver" />
+              <col className="col-queue" />
+              <col className="col-relay" />
+              <col className="col-delay" />
+              <col className="col-subject" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Status</th>
+                <th>Sender</th>
+                <th>Receiver</th>
+                <th>Queue</th>
+                <th>Relay</th>
+                <th>Delay</th>
+                <th>Subject</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!loading && data.items.length === 0 ? (
+                <tr>
+                  <td colSpan={8}>
+                    <div className="empty-state">
+                      <Search className="icon-lg" />
+                      <strong>No matching records</strong>
+                      <span>Adjust your filters or reset the search to inspect recent mail events.</span>
+                      {activeFilterCount > 0 ? <button className="primary-button" onClick={onResetFilters}>Reset filters</button> : null}
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                data.items.map((item) => (
+                  <tr key={item.id}>
+                    <td>
+                      <strong className="cell-main">{formatTime(item.tsUtc)}</strong>
+                      <span className="cell-sub">{relativeTime(item.tsUtc)}</span>
+                    </td>
+                    <td><StatusBadge status={item.status} /></td>
+                    <td title={item.from}>
+                      <strong className="cell-main truncate">{item.from || "-"}</strong>
+                      <span className="cell-sub truncate">{item.process || item.host || "-"}</span>
+                    </td>
+                    <td title={item.to}><span className="truncate">{item.to || "-"}</span></td>
+                    <td><code className="truncate">{item.queueId || item.queuedAs || "-"}</code></td>
+                    <td title={item.relay}><span className="truncate">{item.relay || item.helo || "-"}</span></td>
+                    <td><DelayBadge delay={item.delay} /></td>
+                    <td title={item.subject || item.raw}>
+                      <span className="truncate">{item.subject || item.messageId || "-"}</span>
+                      {item.sizeBytes !== null ? <span className="cell-sub">{formatBytes(item.sizeBytes)}</span> : null}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function UsersView({
+  isCreatingUser,
+  newUser,
+  userError,
+  users,
+  onCreateUser,
+  onLoadUsers,
+  onSetNewUser,
+}: {
+  isCreatingUser: boolean;
+  newUser: { email: string; password: string; role: User["role"] };
+  userError: string;
+  users: User[];
+  onCreateUser: (event: FormEvent<HTMLFormElement>) => void;
+  onLoadUsers: () => void;
+  onSetNewUser: (user: { email: string; password: string; role: User["role"] }) => void;
+}) {
+  return (
+    <section className="users-layout">
+      <section className="panel">
+        <div className="panel-title block">
+          <h3><Shield className="icon accent" /> Create User</h3>
+          <p>Add operators or admins with scoped dashboard access.</p>
+        </div>
+        <form className="user-form" onSubmit={onCreateUser}>
+          <Field label="Email">
+            <input type="email" value={newUser.email} onChange={(event) => onSetNewUser({ ...newUser, email: event.target.value })} placeholder="user@company.com" required />
+          </Field>
+          <Field label="Password">
+            <input type="password" value={newUser.password} onChange={(event) => onSetNewUser({ ...newUser, password: event.target.value })} placeholder="Min. 8 characters" minLength={8} required />
+          </Field>
+          <Field label="Role">
+            <select value={newUser.role} onChange={(event) => onSetNewUser({ ...newUser, role: event.target.value as User["role"] })}>
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+          </Field>
+          <button className="primary-button full" type="submit" disabled={isCreatingUser}>
+            {isCreatingUser ? <Loader2 className="icon spin" /> : <UserPlus className="icon" />}
+            {isCreatingUser ? "Creating..." : "Create user"}
+          </button>
+        </form>
+        {userError ? <InlineNotice tone="danger" icon={<XCircle className="icon" />} text={userError} /> : null}
+      </section>
+
+      <section className="panel">
+        <div className="table-toolbar">
+          <div>
+            <h3>Users Directory</h3>
+            <p>{users.length.toLocaleString()} active dashboard account{users.length === 1 ? "" : "s"}</p>
+          </div>
+          <button className="secondary-button" onClick={onLoadUsers}>Refresh</button>
+        </div>
+
+        <div className="user-list">
+          {users.length === 0 ? (
+            <div className="empty-state compact">
+              <Users className="icon-lg" />
+              <strong>No users found</strong>
+            </div>
+          ) : (
+            users.map((item) => (
+              <article className="user-row" key={item.id}>
+                <div className="avatar">{item.email.charAt(0).toUpperCase()}</div>
+                <div className="user-details">
+                  <strong>{item.email}</strong>
+                  <span>{item.createdAt ? formatTime(item.createdAt) : "Created date unavailable"}</span>
+                </div>
+                <span className={`role-chip ${item.role}`}>{item.role}</span>
+              </article>
+            ))
           )}
-        >
-          {icon}
         </div>
+      </section>
+    </section>
+  );
+}
+
+function Field({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function InlineNotice({ icon, text, tone = "neutral" }: { icon: React.ReactNode; text: string; tone?: "neutral" | "danger" }) {
+  return (
+    <div className={`notice ${tone}`}>
+      {icon}
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function MetricCard({ icon, label, tone = "default", value }: { icon: React.ReactNode; label: string; tone?: "default" | "success" | "warning" | "danger"; value: string }) {
+  return (
+    <article className={`metric-card ${tone}`}>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
       </div>
+      <div className="metric-icon">{icon}</div>
+    </article>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="mini-stat">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </article>
   );
 }
@@ -790,37 +722,50 @@ function MetricCard({
 function StatusBadge({ status }: { status: string }) {
   const variant = getStatusVariant(status);
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold capitalize",
-        variant === "success" && "bg-success/10 text-success",
-        variant === "warning" && "bg-warning/10 text-warning",
-        variant === "error" && "bg-destructive/10 text-destructive",
-        variant === "muted" && "bg-muted text-muted-foreground"
-      )}
-    >
-      {variant === "success" && <CheckCircle2 className="w-3 h-3" />}
-      {variant === "warning" && <AlertTriangle className="w-3 h-3" />}
-      {variant === "error" && <XCircle className="w-3 h-3" />}
-      {status || "unknown"}
+    <span className={`status-badge ${variant}`}>
+      {variant === "success" ? <CheckCircle2 className="icon-xs" /> : null}
+      {variant === "warning" ? <AlertTriangle className="icon-xs" /> : null}
+      {variant === "danger" ? <XCircle className="icon-xs" /> : null}
+      <span>{status || "unknown"}</span>
     </span>
   );
 }
 
-function getStatusVariant(status: string): "success" | "warning" | "error" | "muted" {
+function DelayBadge({ delay }: { delay: number | null }) {
+  return <span className={`delay-badge ${delay !== null && delay > 10 ? "slow" : ""}`}>{delay === null ? "-" : `${delay.toFixed(2)}s`}</span>;
+}
+
+function getStatusVariant(status: string): "success" | "warning" | "danger" | "muted" {
   if (status === "sent" || status === "passed clean") return "success";
   if (status === "deferred") return "warning";
-  if (status === "bounced" || status === "rejected" || status.startsWith("blocked")) return "error";
+  if (status === "bounced" || status === "rejected" || status.startsWith("blocked")) return "danger";
   return "muted";
 }
 
 function formatTime(value: string) {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function relativeTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown time";
+  const seconds = Math.round((date.getTime() - Date.now()) / 1000);
+  const absSeconds = Math.abs(seconds);
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [["day", 86400], ["hour", 3600], ["minute", 60], ["second", 1]];
+  const [unit, divisor] = units.find(([, size]) => absSeconds >= size) ?? ["second", 1];
+  return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(seconds / divisor), unit);
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB"];
+  let size = value / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
   }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(date);
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
