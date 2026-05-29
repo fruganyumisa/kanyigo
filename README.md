@@ -1,4 +1,4 @@
-# Mail Log Dashboard API
+# Mail Log Dashboard
 
 A containerized mail log dashboard with a Go API, PostgreSQL storage, and a Next.js frontend. It ingests `/var/log/maillog` Postfix-style syslog entries and exposes searchable delivery records for an operations UI.
 
