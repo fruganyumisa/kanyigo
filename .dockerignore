@@ -1,0 +1,7 @@
+.git
+.agents
+.codex
+maillog.db
+maillog.db-shm
+maillog.db-wal
+frontend

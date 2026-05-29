@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-logs_dashboard}
+      POSTGRES_USER: ${POSTGRES_USER:-logs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logs}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgres://${POSTGRES_USER:-logs}:${POSTGRES_PASSWORD:-logs}@postgres:5432/${POSTGRES_DB:-logs_dashboard}?sslmode=disable
+      LISTEN_ADDR: :8080
+      MAILLOG_PATH: /var/log/maillog
+      AUTO_INGEST: ${AUTO_INGEST:-true}
+      INGEST_INTERVAL: ${INGEST_INTERVAL:-2m}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    volumes:
+      - ${MAILLOG_PATH:-/var/log/maillog}:/var/log/maillog:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      API_INTERNAL_BASE: http://api:8080
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    depends_on:
+      - api
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres-data:

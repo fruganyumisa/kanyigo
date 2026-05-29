@@ -3,29 +3,32 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
+	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/lib/pq"
 )
 
-func OpenDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+func OpenDB(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
-		return nil, err
-	}
+	db.SetMaxOpenConns(envInt("DB_MAX_OPEN_CONNS", 25))
+	db.SetMaxIdleConns(envInt("DB_MAX_IDLE_CONNS", 5))
+	db.SetConnMaxLifetime(time.Duration(envInt("DB_CONN_MAX_LIFETIME_MINUTES", 30)) * time.Minute)
 	return db, nil
 }
 
 func EnsureSchema(db *sql.DB) error {
 	schema := `
 CREATE TABLE IF NOT EXISTS maillog_entries (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	ts_utc TEXT NOT NULL,
+	id BIGSERIAL PRIMARY KEY,
+	ts_utc TIMESTAMPTZ NOT NULL,
 	host TEXT,
 	process TEXT,
 	queue_id TEXT,
@@ -56,10 +59,30 @@ CREATE INDEX IF NOT EXISTS idx_maillog_queue ON maillog_entries(queue_id);
 
 CREATE TABLE IF NOT EXISTS ingest_state (
 	key TEXT PRIMARY KEY,
-	offset_bytes INTEGER NOT NULL,
-	inode INTEGER NOT NULL,
-	updated_at TEXT NOT NULL
+	offset_bytes BIGINT NOT NULL,
+	inode BIGINT NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS dashboard_users (
+	id BIGSERIAL PRIMARY KEY,
+	email TEXT NOT NULL UNIQUE,
+	password_hash TEXT NOT NULL,
+	role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dashboard_users_role ON dashboard_users(role);
+
+CREATE TABLE IF NOT EXISTS dashboard_sessions (
+	token_hash TEXT PRIMARY KEY,
+	user_id BIGINT NOT NULL REFERENCES dashboard_users(id) ON DELETE CASCADE,
+	expires_at TIMESTAMPTZ NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_user ON dashboard_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expires ON dashboard_sessions(expires_at);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
@@ -72,23 +95,38 @@ CREATE TABLE IF NOT EXISTS ingest_state (
 	return nil
 }
 
+func envInt(key string, def int) int {
+	value := envOrDefault(key, "")
+	if value == "" {
+		return def
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return def
+	}
+	return parsed
+}
+
 func ensureColumns(db *sql.DB, table string, cols []string) error {
 	existing := map[string]bool{}
-	rows, err := db.Query("PRAGMA table_info(" + table + ");")
+	rows, err := db.Query(`
+SELECT column_name
+FROM information_schema.columns
+WHERE table_schema = current_schema() AND table_name = $1;
+`, table)
 	if err != nil {
 		return fmt.Errorf("table_info: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull int
-		var dfltValue interface{}
-		var pk int
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			return fmt.Errorf("table_info scan: %w", err)
 		}
 		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("table_info rows: %w", err)
 	}
 	colTypes := map[string]string{
 		"queued_as":     "TEXT",

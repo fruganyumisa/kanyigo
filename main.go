@@ -12,19 +12,27 @@ func main() {
 	var (
 		mode       = flag.String("mode", "serve", "mode: ingest or serve")
 		maillog    = flag.String("maillog", envOrDefault("MAILLOG_PATH", "/var/log/maillog"), "path to maillog")
-		dbPath     = flag.String("db", envOrDefault("DB_PATH", "./maillog.db"), "path to sqlite db")
+		dbURL      = flag.String("db", envOrDefault("DATABASE_URL", "postgres://logs:logs@localhost:5432/logs_dashboard?sslmode=disable"), "postgres connection string")
 		listenAddr = flag.String("listen", envOrDefault("LISTEN_ADDR", ":8080"), "http listen address")
 	)
 	flag.Parse()
 
-	db, err := OpenDB(*dbPath)
+	db, err := OpenDB(*dbURL)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
+	if *mode == "health" {
+		fmt.Println("ok")
+		return
+	}
+
 	if err := EnsureSchema(db); err != nil {
 		log.Fatalf("ensure schema: %v", err)
+	}
+	if err := EnsureBootstrapAdmin(db); err != nil {
+		log.Fatalf("ensure bootstrap admin: %v", err)
 	}
 
 	switch *mode {
@@ -86,11 +94,4 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unknown mode")
 		os.Exit(2)
 	}
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

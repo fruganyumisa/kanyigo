@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -11,18 +12,34 @@ import (
 )
 
 type Server struct {
-	db *sql.DB
+	db             *sql.DB
+	allowedOrigins map[string]bool
 }
 
 func NewServer(db *sql.DB) *Server {
-	return &Server{db: db}
+	return &Server{
+		db:             db,
+		allowedOrigins: parseAllowedOrigins(envOrDefault("ALLOWED_ORIGINS", "http://localhost:3000")),
+	}
 }
 
 func (s *Server) ListenAndServe(addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/logs", s.handleLogs)
-	return http.ListenAndServe(addr, withCORS(withLogging(mux)))
+	mux.HandleFunc("/api/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/auth/logout", s.handleLogout)
+	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleMe))
+	mux.HandleFunc("/api/users", s.requireAuth(s.handleUsers))
+	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           s.withCORS(withSecurityHeaders(withLogging(mux))),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	return server.ListenAndServe()
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -69,33 +86,34 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	search := q.Get("q")
 	limit := parseIntDefault(q.Get("limit"), 100)
 	offset := parseIntDefault(q.Get("offset"), 0)
+	if limit > 500 {
+		limit = 500
+	}
 
 	where := []string{"1=1"}
 	args := []interface{}{}
+	addArg := func(v interface{}) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
 
 	if from != "" {
-		where = append(where, "ts_utc >= ?")
-		args = append(args, normalizeTime(from))
+		where = append(where, "ts_utc >= "+addArg(normalizeTime(from)))
 	}
 	if to != "" {
-		where = append(where, "ts_utc <= ?")
-		args = append(args, normalizeTime(to))
+		where = append(where, "ts_utc <= "+addArg(normalizeTime(to)))
 	}
 	if sender != "" {
-		where = append(where, "mail_from LIKE ?")
-		args = append(args, "%"+sender+"%")
+		where = append(where, "mail_from ILIKE "+addArg("%"+sender+"%"))
 	}
 	if receiver != "" {
-		where = append(where, "mail_to LIKE ?")
-		args = append(args, "%"+receiver+"%")
+		where = append(where, "mail_to ILIKE "+addArg("%"+receiver+"%"))
 	}
 	if status != "" {
-		where = append(where, "status = ?")
-		args = append(args, status)
+		where = append(where, "status = "+addArg(status))
 	}
 	if search != "" {
-		where = append(where, "raw LIKE ?")
-		args = append(args, "%"+search+"%")
+		where = append(where, "raw ILIKE "+addArg("%"+search+"%"))
 	}
 
 	whereSQL := strings.Join(where, " AND ")
@@ -112,9 +130,8 @@ SELECT id, ts_utc, mail_from, mail_to, status, host, process, queue_id, relay, d
 FROM maillog_entries
 WHERE ` + whereSQL + `
 ORDER BY ts_utc DESC
-LIMIT ? OFFSET ?;`
+LIMIT ` + addArg(limit) + ` OFFSET ` + addArg(offset) + `;`
 
-	args = append(args, limit, offset)
 	rows, err := s.db.Query(querySQL, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -125,6 +142,7 @@ LIMIT ? OFFSET ?;`
 	items := []logRecord{}
 	for rows.Next() {
 		var rec logRecord
+		var ts time.Time
 		var delay sql.NullFloat64
 		var size sql.NullInt64
 		var hits sql.NullFloat64
@@ -134,12 +152,13 @@ LIMIT ? OFFSET ?;`
 		var helo sql.NullString
 		var amavisOrigin sql.NullString
 		if err := rows.Scan(
-			&rec.ID, &rec.TSUTC, &rec.From, &rec.To, &rec.Status, &rec.Host, &rec.Process, &rec.QueueID,
+			&rec.ID, &ts, &rec.From, &rec.To, &rec.Status, &rec.Host, &rec.Process, &rec.QueueID,
 			&rec.Relay, &delay, &rec.DSN, &rec.MessageID, &size, &queuedAs, &mailID, &subject, &hits, &helo, &amavisOrigin, &rec.Raw,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		rec.TSUTC = ts.UTC().Format(time.RFC3339)
 		if delay.Valid {
 			rec.Delay = &delay.Float64
 		}
@@ -166,6 +185,10 @@ LIMIT ? OFFSET ?;`
 		}
 		items = append(items, rec)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(logsResponse{Total: total, Items: items})
@@ -182,12 +205,12 @@ func parseIntDefault(v string, def int) int {
 	return i
 }
 
-func normalizeTime(v string) string {
+func normalizeTime(v string) interface{} {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
-		return t.UTC().Format(time.RFC3339)
+		return t.UTC()
 	}
 	if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
-		return t.UTC().Format(time.RFC3339)
+		return t.UTC()
 	}
 	return v
 }
@@ -198,10 +221,19 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
-func withCORS(next http.Handler) http.Handler {
+func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if !s.allowedOrigins[origin] {
+				writeError(w, http.StatusForbidden, errors.New("origin not allowed"))
+				return
+			}
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -209,6 +241,27 @@ func withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func parseAllowedOrigins(value string) map[string]bool {
+	allowed := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		origin := strings.TrimSpace(part)
+		if origin != "" {
+			allowed[origin] = true
+		}
+	}
+	return allowed
 }
 
 type statusRecorder struct {

@@ -27,7 +27,7 @@ func IngestFile(db *sql.DB, path string) (IngestStats, error) {
 	stmt, err := db.Prepare(`
 INSERT INTO maillog_entries (
 	ts_utc, host, process, queue_id, mail_from, mail_to, status, relay, delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, raw, raw_hash
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 ON CONFLICT(raw_hash) DO NOTHING;
 `)
 	if err != nil {
@@ -44,8 +44,8 @@ ON CONFLICT(raw_hash) DO NOTHING;
 			stats.Skipped++
 			continue
 		}
-		_, err := stmt.Exec(
-			entry.TSUTC.Format(time.RFC3339),
+		res, err := stmt.Exec(
+			entry.TSUTC.UTC(),
 			entry.Host,
 			entry.Process,
 			entry.QueueID,
@@ -69,6 +69,10 @@ ON CONFLICT(raw_hash) DO NOTHING;
 		)
 		if err != nil {
 			stats.Errors++
+			continue
+		}
+		if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+			stats.Skipped++
 			continue
 		}
 		stats.Inserted++
@@ -117,7 +121,7 @@ func IngestIncremental(db *sql.DB, path string) (IngestStats, error) {
 	stmt, err := db.Prepare(`
 INSERT INTO maillog_entries (
 	ts_utc, host, process, queue_id, mail_from, mail_to, status, relay, delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, raw, raw_hash
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 ON CONFLICT(raw_hash) DO NOTHING;
 `)
 	if err != nil {
@@ -134,8 +138,8 @@ ON CONFLICT(raw_hash) DO NOTHING;
 			stats.Skipped++
 			continue
 		}
-		_, err := stmt.Exec(
-			entry.TSUTC.Format(time.RFC3339),
+		res, err := stmt.Exec(
+			entry.TSUTC.UTC(),
 			entry.Host,
 			entry.Process,
 			entry.QueueID,
@@ -159,6 +163,10 @@ ON CONFLICT(raw_hash) DO NOTHING;
 		)
 		if err != nil {
 			stats.Errors++
+			continue
+		}
+		if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+			stats.Skipped++
 			continue
 		}
 		stats.Inserted++
@@ -198,7 +206,7 @@ type ingestState struct {
 
 func getIngestState(db *sql.DB, key string) (ingestState, error) {
 	var state ingestState
-	row := db.QueryRow(`SELECT offset_bytes, inode FROM ingest_state WHERE key = ?`, key)
+	row := db.QueryRow(`SELECT offset_bytes, inode FROM ingest_state WHERE key = $1`, key)
 	switch err := row.Scan(&state.OffsetBytes, &state.Inode); err {
 	case sql.ErrNoRows:
 		return ingestState{OffsetBytes: 0, Inode: 0}, nil
@@ -212,9 +220,9 @@ func getIngestState(db *sql.DB, key string) (ingestState, error) {
 func setIngestState(db *sql.DB, key string, offset int64, inode int64) error {
 	_, err := db.Exec(`
 INSERT INTO ingest_state (key, offset_bytes, inode, updated_at)
-VALUES (?, ?, ?, ?)
+VALUES ($1, $2, $3, $4)
 ON CONFLICT(key) DO UPDATE SET offset_bytes=excluded.offset_bytes, inode=excluded.inode, updated_at=excluded.updated_at;
-`, key, offset, inode, time.Now().UTC().Format(time.RFC3339))
+`, key, offset, inode, time.Now().UTC())
 	return err
 }
 
