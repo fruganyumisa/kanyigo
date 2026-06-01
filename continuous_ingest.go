@@ -3,11 +3,19 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"time"
 )
+
+type parsedRecord struct {
+	record lineRecord
+	entry  *LogEntry
+	ok     bool
+}
 
 func RunMailLogIngestor(ctx context.Context, db *sql.DB, cfg StreamConfig) error {
 	stateKey := continuousIngestStateKey(cfg.Path)
@@ -19,12 +27,19 @@ func RunMailLogIngestor(ctx context.Context, db *sql.DB, cfg StreamConfig) error
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	records := make(chan lineRecord, 1024)
+	parsedRecords := make(chan parsedRecord, 1024)
 	followErrors := make(chan error, 1)
 	go func() {
 		followErrors <- followMailLog(ctx, cfg, state, records)
 	}()
+	for range cfg.ProcessingWorkers {
+		go parseMailLogRecords(ctx, records, parsedRecords)
+	}
 
 	stitcher := NewTransactionStitcher(cfg.QueueIdleTimeout)
+	stdout := json.NewEncoder(os.Stdout)
+	pending := make(map[int64]parsedRecord)
+	var nextSequence int64
 	evictionInterval := minDuration(cfg.QueueIdleTimeout/2, time.Minute)
 	if evictionInterval <= 0 {
 		evictionInterval = time.Nanosecond
@@ -41,24 +56,63 @@ func RunMailLogIngestor(ctx context.Context, db *sql.DB, cfg StreamConfig) error
 				return nil
 			}
 			return err
-		case record := <-records:
-			entry, ok := ParseLine(record.Text, time.Now(), time.Local)
-			if !ok {
-				log.Printf("skip malformed maillog line at inode=%d offset=%d", record.Inode, record.Offset)
-			}
-			if err := persistMailLogRecord(db, stateKey, record, entry); err != nil {
-				return err
-			}
-			if ok {
-				_, _ = stitcher.Apply(entry)
+		case parsed := <-parsedRecords:
+			pending[parsed.record.Sequence] = parsed
+			for {
+				next, ok := pending[nextSequence]
+				if !ok {
+					break
+				}
+				delete(pending, nextSequence)
+				if err := processParsedRecord(db, stdout, stateKey, stitcher, next); err != nil {
+					return err
+				}
+				nextSequence++
 			}
 		case now := <-evictionTicker.C:
-			_ = stitcher.EvictExpired(now)
+			for _, transaction := range stitcher.EvictExpired(now) {
+				if err := stdout.Encode(transaction); err != nil {
+					return fmt.Errorf("encode expired mail transaction: %w", err)
+				}
+			}
 			if err := evictExpiredTransactions(db, now.Add(-cfg.QueueIdleTimeout)); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func parseMailLogRecords(ctx context.Context, records <-chan lineRecord, output chan<- parsedRecord) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case record := <-records:
+			entry, ok := ParseLine(record.Text, time.Now(), time.Local)
+			select {
+			case <-ctx.Done():
+				return
+			case output <- parsedRecord{record: record, entry: entry, ok: ok}:
+			}
+		}
+	}
+}
+
+func processParsedRecord(db *sql.DB, stdout *json.Encoder, stateKey string, stitcher *TransactionStitcher, parsed parsedRecord) error {
+	if !parsed.ok {
+		log.Printf("skip malformed maillog line at inode=%d offset=%d", parsed.record.Inode, parsed.record.Offset)
+	}
+	if err := persistMailLogRecord(db, stateKey, parsed.record, parsed.entry); err != nil {
+		return err
+	}
+	if parsed.ok {
+		if transaction, complete := stitcher.Apply(parsed.entry); complete {
+			if err := stdout.Encode(transaction); err != nil {
+				return fmt.Errorf("encode mail transaction: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 func persistMailLogRecord(db *sql.DB, stateKey string, record lineRecord, entry *LogEntry) error {
@@ -95,14 +149,14 @@ func continuousIngestStateKey(path string) string {
 func insertRawEntry(tx *sql.Tx, entry *LogEntry) (bool, error) {
 	result, err := tx.Exec(`
 INSERT INTO maillog_entries (
-	ts_utc, host, process, queue_id, mail_from, mail_to, status, relay, delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, raw, raw_hash
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+	ts_utc, host, process, queue_id, mail_from, mail_to, status, relay, delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, is_junk, spam_score, raw, raw_hash
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 ON CONFLICT(raw_hash) DO NOTHING;
 `,
 		entry.TSUTC.UTC(), entry.Host, entry.Process, entry.QueueID, entry.MailFrom, entry.MailTo,
 		entry.Status, entry.Relay, nullFloat(entry.Delay), entry.Delays, entry.DSN, entry.MessageID,
 		nullInt64(entry.SizeBytes), entry.QueuedAs, entry.MailID, entry.Subject, nullFloat(entry.Hits),
-		entry.Helo, entry.AmavisOrigin, entry.Raw, entry.RawHash,
+		entry.Helo, entry.AmavisOrigin, entry.IsJunk, nullFloat(entry.SpamScore), entry.Raw, entry.RawHash,
 	)
 	if err != nil {
 		return false, err
@@ -136,8 +190,10 @@ SET last_ts_utc = $2,
 	hits = COALESCE($17, hits),
 	helo = CASE WHEN $18 <> '' THEN $18 ELSE helo END,
 	amavis_origin = CASE WHEN $19 <> '' THEN $19 ELSE amavis_origin END,
-	raw = CASE WHEN raw = '' THEN $20 ELSE raw || E'\n' || $20 END,
-	terminal = terminal OR $21,
+	is_junk = is_junk OR $20,
+	spam_score = COALESCE($21, spam_score),
+	raw = CASE WHEN raw = '' THEN $22 ELSE raw || E'\n' || $22 END,
+	terminal = terminal OR $23,
 	updated_at = NOW()
 WHERE id = (
 	SELECT id FROM mail_transactions
@@ -150,7 +206,7 @@ WHERE id = (
 		entry.QueueID, entry.TSUTC.UTC(), entry.Host, entry.Process, entry.MailFrom, entry.MailTo,
 		entry.Status, entry.Relay, nullFloat(entry.Delay), entry.Delays, entry.DSN, entry.MessageID,
 		nullInt64(entry.SizeBytes), entry.QueuedAs, entry.MailID, entry.Subject, nullFloat(entry.Hits),
-		entry.Helo, entry.AmavisOrigin, entry.Raw, terminal,
+		entry.Helo, entry.AmavisOrigin, entry.IsJunk, nullFloat(entry.SpamScore), entry.Raw, terminal,
 	)
 	if err != nil {
 		return err
@@ -163,16 +219,16 @@ WHERE id = (
 INSERT INTO mail_transactions (
 	arrival_ts_utc, last_ts_utc, queue_id, host, process, mail_from, mail_to, status, relay,
 	delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo,
-	amavis_origin, raw, terminal, timed_out, updated_at
+	amavis_origin, is_junk, spam_score, raw, terminal, timed_out, updated_at
 ) VALUES (
 	$1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-	$18, $19, $20, $21, FALSE, NOW()
+	$18, $19, $20, $21, $22, $23, FALSE, NOW()
 );
 `,
 		entry.TSUTC.UTC(), entry.QueueID, entry.Host, entry.Process, entry.MailFrom, entry.MailTo,
 		entry.Status, entry.Relay, nullFloat(entry.Delay), entry.Delays, entry.DSN, entry.MessageID,
 		nullInt64(entry.SizeBytes), entry.QueuedAs, entry.MailID, entry.Subject, nullFloat(entry.Hits),
-		entry.Helo, entry.AmavisOrigin, entry.Raw, terminal,
+		entry.Helo, entry.AmavisOrigin, entry.IsJunk, nullFloat(entry.SpamScore), entry.Raw, terminal,
 	)
 	return err
 }

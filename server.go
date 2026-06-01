@@ -74,6 +74,8 @@ type logRecord struct {
 	Hits         *float64 `json:"hits"`
 	Helo         string   `json:"helo"`
 	AmavisOrigin string   `json:"amavisOrigin"`
+	IsJunk       bool     `json:"isJunk"`
+	SpamScore    *float64 `json:"spamScore"`
 	TimedOut     bool     `json:"timedOut"`
 	Raw          string   `json:"raw"`
 }
@@ -128,7 +130,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	querySQL := `
-SELECT id, arrival_ts_utc, mail_from, mail_to, status, host, process, queue_id, relay, delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, timed_out, raw
+SELECT id, arrival_ts_utc, mail_from, mail_to, status, host, process, queue_id, relay, delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, is_junk, spam_score, timed_out, raw
 FROM mail_transactions
 WHERE ` + whereSQL + `
 ORDER BY arrival_ts_utc DESC
@@ -148,6 +150,7 @@ LIMIT ` + addArg(limit) + ` OFFSET ` + addArg(offset) + `;`
 		var delay sql.NullFloat64
 		var size sql.NullInt64
 		var hits sql.NullFloat64
+		var spamScore sql.NullFloat64
 		var queuedAs sql.NullString
 		var mailID sql.NullString
 		var subject sql.NullString
@@ -155,7 +158,7 @@ LIMIT ` + addArg(limit) + ` OFFSET ` + addArg(offset) + `;`
 		var amavisOrigin sql.NullString
 		if err := rows.Scan(
 			&rec.ID, &ts, &rec.From, &rec.To, &rec.Status, &rec.Host, &rec.Process, &rec.QueueID,
-			&rec.Relay, &delay, &rec.Delays, &rec.DSN, &rec.MessageID, &size, &queuedAs, &mailID, &subject, &hits, &helo, &amavisOrigin, &rec.TimedOut, &rec.Raw,
+			&rec.Relay, &delay, &rec.Delays, &rec.DSN, &rec.MessageID, &size, &queuedAs, &mailID, &subject, &hits, &helo, &amavisOrigin, &rec.IsJunk, &spamScore, &rec.TimedOut, &rec.Raw,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -169,6 +172,9 @@ LIMIT ` + addArg(limit) + ` OFFSET ` + addArg(offset) + `;`
 		}
 		if hits.Valid {
 			rec.Hits = &hits.Float64
+		}
+		if spamScore.Valid {
+			rec.SpamScore = &spamScore.Float64
 		}
 		if queuedAs.Valid {
 			rec.QueuedAs = queuedAs.String

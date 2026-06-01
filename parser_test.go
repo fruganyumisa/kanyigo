@@ -64,3 +64,31 @@ func TestParseLineAmavis(t *testing.T) {
 		t.Fatalf("origin: %s", entry.AmavisOrigin)
 	}
 }
+
+func TestParseLineAmavisSpammy(t *testing.T) {
+	line := "Jun  1 10:15:42 mail amavis[1234]: (01234-01) Passed SPAMMY {RelayedInbound}, <sender@example.com> -> <user@example.com>, Queue-ID: 4YgX9z0zKzHz, Hits: 8.75, queued_as: 4YgX9z0zKzJz"
+	entry, ok := ParseLine(line, time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC), time.UTC)
+	if !ok {
+		t.Fatal("expected spammy Amavis line to parse")
+	}
+	if !entry.IsJunk {
+		t.Fatal("expected spammy Amavis line to be junk")
+	}
+	if entry.SpamScore == nil || *entry.SpamScore != 8.75 {
+		t.Fatalf("spam score: %+v", entry.SpamScore)
+	}
+}
+
+func TestParseLineDovecotLMTPJunk(t *testing.T) {
+	line := "Jun  1 10:15:43 mail dovecot: lmtp(user@example.com)<1234><abc>: sieve: msgid=<test@example.com>: saved mail to Junk; Queue-ID: 4YgX9z0zKzHz"
+	entry, ok := ParseLine(line, time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC), time.UTC)
+	if !ok {
+		t.Fatal("expected Dovecot LMTP line to parse")
+	}
+	if entry.QueueID != "4YgX9z0zKzHz" {
+		t.Fatalf("queue id: %s", entry.QueueID)
+	}
+	if !entry.IsJunk {
+		t.Fatal("expected Dovecot Junk delivery to be classified as junk")
+	}
+}

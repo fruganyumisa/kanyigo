@@ -18,26 +18,41 @@ type StreamConfig struct {
 	PollInterval         time.Duration
 	RotationDrainTimeout time.Duration
 	QueueIdleTimeout     time.Duration
+	ProcessingWorkers    int
 }
 
 type lineRecord struct {
-	Text   string
-	Inode  int64
-	Offset int64
+	Sequence int64
+	Text     string
+	Inode    int64
+	Offset   int64
 }
 
 type MailTransaction struct {
-	ArrivalTimestamp time.Time
-	LastTimestamp    time.Time
-	QueueID          string
-	Sender           string
-	Recipient        string
-	Status           string
-	Relay            string
-	Delay            *float64
-	Delays           string
-	DSN              string
-	TimedOut         bool
+	ArrivalTimestamp time.Time `json:"arrival_timestamp"`
+	LastTimestamp    time.Time `json:"last_timestamp"`
+	QueueID          string    `json:"queue_id"`
+	Host             string    `json:"host"`
+	Process          string    `json:"process"`
+	Sender           string    `json:"sender"`
+	Recipient        string    `json:"recipient"`
+	Status           string    `json:"status"`
+	Relay            string    `json:"relay"`
+	Delay            *float64  `json:"delay,omitempty"`
+	Delays           string    `json:"delays"`
+	DSN              string    `json:"dsn"`
+	MessageID        string    `json:"message_id"`
+	SizeBytes        *int64    `json:"size_bytes,omitempty"`
+	QueuedAs         string    `json:"queued_as"`
+	MailID           string    `json:"mail_id"`
+	Subject          string    `json:"subject"`
+	Hits             *float64  `json:"hits,omitempty"`
+	Helo             string    `json:"helo"`
+	AmavisOrigin     string    `json:"amavis_origin"`
+	IsJunk           bool      `json:"is_junk"`
+	SpamScore        float64   `json:"spam_score"`
+	TimedOut         bool      `json:"timed_out"`
+	Raw              []string  `json:"raw"`
 }
 
 type queuedTransaction struct {
@@ -79,6 +94,12 @@ func (s *TransactionStitcher) Apply(entry *LogEntry) (*MailTransaction, bool) {
 	tx := &queue.transaction
 	tx.LastTimestamp = entry.TSUTC
 	queue.lastSeen = time.Now()
+	if entry.Host != "" {
+		tx.Host = entry.Host
+	}
+	if entry.Process != "" {
+		tx.Process = entry.Process
+	}
 	if entry.MailFrom != "" {
 		tx.Sender = entry.MailFrom
 	}
@@ -101,6 +122,39 @@ func (s *TransactionStitcher) Apply(entry *LogEntry) (*MailTransaction, bool) {
 	if entry.DSN != "" {
 		tx.DSN = entry.DSN
 	}
+	if entry.MessageID != "" {
+		tx.MessageID = entry.MessageID
+	}
+	if entry.SizeBytes != nil {
+		size := *entry.SizeBytes
+		tx.SizeBytes = &size
+	}
+	if entry.QueuedAs != "" {
+		tx.QueuedAs = entry.QueuedAs
+	}
+	if entry.MailID != "" {
+		tx.MailID = entry.MailID
+	}
+	if entry.Subject != "" {
+		tx.Subject = entry.Subject
+	}
+	if entry.Hits != nil {
+		hits := *entry.Hits
+		tx.Hits = &hits
+	}
+	if entry.Helo != "" {
+		tx.Helo = entry.Helo
+	}
+	if entry.AmavisOrigin != "" {
+		tx.AmavisOrigin = entry.AmavisOrigin
+	}
+	if entry.IsJunk {
+		tx.IsJunk = true
+	}
+	if entry.SpamScore != nil {
+		tx.SpamScore = *entry.SpamScore
+	}
+	tx.Raw = append(tx.Raw, entry.Raw)
 	if !isTerminalStatus(tx.Status) {
 		return nil, false
 	}
@@ -143,6 +197,9 @@ func validateStreamConfig(cfg StreamConfig) error {
 	if cfg.PollInterval <= 0 || cfg.RotationDrainTimeout <= 0 || cfg.QueueIdleTimeout <= 0 {
 		return errors.New("poll interval, rotation drain timeout, and queue idle timeout must be positive")
 	}
+	if cfg.ProcessingWorkers <= 0 {
+		return errors.New("processing workers must be positive")
+	}
 	return nil
 }
 
@@ -158,16 +215,19 @@ func followMailLog(ctx context.Context, cfg StreamConfig, checkpoint ingestState
 
 	var pending strings.Builder
 	var rotatedAt time.Time
+	var sequence int64
 	for {
 		chunk, readErr := reader.ReadString('\n')
 		offset += int64(len(chunk))
 		pending.WriteString(chunk)
 		if strings.HasSuffix(chunk, "\n") {
 			record := lineRecord{
-				Text:   strings.TrimSuffix(pending.String(), "\n"),
-				Inode:  inode,
-				Offset: offset,
+				Sequence: sequence,
+				Text:     strings.TrimSuffix(pending.String(), "\n"),
+				Inode:    inode,
+				Offset:   offset,
 			}
+			sequence++
 			pending.Reset()
 			select {
 			case output <- record:

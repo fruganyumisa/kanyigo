@@ -59,6 +59,28 @@ func TestTransactionStitcherEvictsIdleQueue(t *testing.T) {
 	}
 }
 
+func TestTransactionStitcherCarriesJunkClassification(t *testing.T) {
+	stitcher := NewTransactionStitcher(time.Hour)
+	score := 8.75
+	stitcher.Apply(&LogEntry{
+		TSUTC:     time.Now().UTC(),
+		QueueID:   "ABC123",
+		IsJunk:    true,
+		SpamScore: &score,
+	})
+	tx, complete := stitcher.Apply(&LogEntry{
+		TSUTC:   time.Now().UTC(),
+		QueueID: "ABC123",
+		Status:  "sent",
+	})
+	if !complete {
+		t.Fatal("sent line must complete transaction")
+	}
+	if !tx.IsJunk || tx.SpamScore != score {
+		t.Fatalf("unexpected junk fields: %+v", tx)
+	}
+}
+
 func TestFollowMailLogResumesFromCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "maillog")
@@ -164,6 +186,7 @@ func startFollower(t *testing.T, path string, checkpoint ingestState) (<-chan li
 		PollInterval:         10 * time.Millisecond,
 		RotationDrainTimeout: 40 * time.Millisecond,
 		QueueIdleTimeout:     time.Hour,
+		ProcessingWorkers:    1,
 	}
 	go func() {
 		if err := followMailLog(ctx, cfg, checkpoint, records); err != nil && err != context.Canceled {

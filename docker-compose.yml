@@ -35,10 +35,13 @@ services:
       MAILLOG_POLL_INTERVAL: ${MAILLOG_POLL_INTERVAL:-250ms}
       MAILLOG_ROTATION_DRAIN_TIMEOUT: ${MAILLOG_ROTATION_DRAIN_TIMEOUT:-1s}
       MAILLOG_QUEUE_IDLE_TIMEOUT: ${MAILLOG_QUEUE_IDLE_TIMEOUT:-30m}
+      MAILLOG_PROCESSING_WORKERS: ${MAILLOG_PROCESSING_WORKERS:-4}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
     volumes:
+      # Keep the API non-root. Grant UID 65532 read access with a POSIX ACL on
+      # the host, or use adm/log membership for a host-installed service user.
       - ${MAILLOG_PATH:-/var/log/maillog}:/var/log/maillog:ro
     depends_on:
       postgres:

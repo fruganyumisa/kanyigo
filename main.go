@@ -8,11 +8,14 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 )
 
 func main() {
+	warnIfRunningAsRoot()
+
 	var (
 		mode       = flag.String("mode", "serve", "mode: follow, init, health, or serve")
 		maillog    = flag.String("maillog", envOrDefault("MAILLOG_PATH", "/var/log/maillog"), "path to maillog")
@@ -91,7 +94,14 @@ func streamConfig(path string) (StreamConfig, error) {
 		PollInterval:         pollInterval,
 		RotationDrainTimeout: rotationDrainTimeout,
 		QueueIdleTimeout:     queueIdleTimeout,
+		ProcessingWorkers:    envInt("MAILLOG_PROCESSING_WORKERS", max(2, runtime.GOMAXPROCS(0))),
 	}, nil
+}
+
+func warnIfRunningAsRoot() {
+	if os.Geteuid() == 0 {
+		log.Printf("warning: running as root is deprecated; provision maillog read access with POSIX ACLs or adm/log group membership")
+	}
 }
 
 func runMailLogIngestorWithRetry(ctx context.Context, db *sql.DB, cfg StreamConfig) {

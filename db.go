@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS maillog_entries (
 	hits REAL,
 	helo TEXT,
 	amavis_origin TEXT,
+	is_junk BOOLEAN NOT NULL DEFAULT FALSE,
+	spam_score REAL,
 	raw TEXT NOT NULL,
 	raw_hash TEXT NOT NULL UNIQUE
 );
@@ -79,6 +81,8 @@ CREATE TABLE IF NOT EXISTS mail_transactions (
 	hits REAL,
 	helo TEXT NOT NULL DEFAULT '',
 	amavis_origin TEXT NOT NULL DEFAULT '',
+	is_junk BOOLEAN NOT NULL DEFAULT FALSE,
+	spam_score REAL,
 	raw TEXT NOT NULL DEFAULT '',
 	terminal BOOLEAN NOT NULL DEFAULT FALSE,
 	timed_out BOOLEAN NOT NULL DEFAULT FALSE,
@@ -123,7 +127,12 @@ CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expires ON dashboard_sessions(
 		return fmt.Errorf("create schema: %w", err)
 	}
 	if err := ensureColumns(db, "maillog_entries", []string{
-		"queued_as", "mail_id", "subject", "hits", "helo", "amavis_origin",
+		"queued_as", "mail_id", "subject", "hits", "helo", "amavis_origin", "is_junk", "spam_score",
+	}); err != nil {
+		return err
+	}
+	if err := ensureColumns(db, "mail_transactions", []string{
+		"is_junk", "spam_score",
 	}); err != nil {
 		return err
 	}
@@ -170,6 +179,8 @@ WHERE table_schema = current_schema() AND table_name = $1;
 		"hits":          "REAL",
 		"helo":          "TEXT",
 		"amavis_origin": "TEXT",
+		"is_junk":       "BOOLEAN NOT NULL DEFAULT FALSE",
+		"spam_score":    "REAL",
 	}
 	for _, col := range cols {
 		if existing[col] {

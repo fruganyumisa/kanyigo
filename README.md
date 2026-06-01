@@ -67,6 +67,12 @@ Grant the service account read access with a POSIX ACL:
 sudo setfacl -m u:logs-dashboard:r /var/log/maillog
 ```
 
+For the provided distroless container, grant the image's dedicated non-root UID:
+
+```bash
+sudo setfacl -m u:65532:r /var/log/maillog
+```
+
 Because log rotation creates a new file, configure the mail log's `logrotate`
 rule to apply the ACL after rotation, or grant access through the distribution's
 log-reading group:
@@ -108,6 +114,8 @@ curl "http://localhost:8080/api/logs?from=2026-01-23T00:00:00Z&to=2026-01-24T00:
 - Run `AUTO_INGEST=true` on only one API replica; additional API replicas should set it to `false`.
 - Continuous ingest drains rotated descriptors and stores the processed byte-offset and inode transactionally in PostgreSQL.
 - In-flight Queue ID transactions are persisted in PostgreSQL so stitching resumes correctly after a restart.
-- Ingest tuning variables: `MAILLOG_POLL_INTERVAL` (default `250ms`), `MAILLOG_ROTATION_DRAIN_TIMEOUT` (default `1s`), and `MAILLOG_QUEUE_IDLE_TIMEOUT` (default `30m`).
-- Amavis lines populate extra fields: `queuedAs`, `mailId`, `subject`, `hits`, `helo`, `amavisOrigin`.
+- Parser workers process raw lines concurrently while checkpoint commits remain in source-file order.
+- Completed and timed-out stitched transactions are JSON-encoded to stdout for downstream log shipping.
+- Ingest tuning variables: `MAILLOG_POLL_INTERVAL` (default `250ms`), `MAILLOG_ROTATION_DRAIN_TIMEOUT` (default `1s`), `MAILLOG_QUEUE_IDLE_TIMEOUT` (default `30m`), and `MAILLOG_PROCESSING_WORKERS` (default: at least `2`, based on available CPUs).
+- Amavis and Dovecot LMTP lines populate junk classification fields: `isJunk` and `spamScore`.
 - The frontend proxies browser requests to the API with `API_INTERNAL_BASE`, which defaults to `http://localhost:8080` for local development.

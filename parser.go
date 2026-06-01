@@ -10,27 +10,29 @@ import (
 )
 
 type LogEntry struct {
-	TSUTC        time.Time
-	Host         string
-	Process      string
-	QueueID      string
-	MailFrom     string
-	MailTo       string
-	Status       string
-	Relay        string
-	Delay        *float64
-	Delays       string
-	DSN          string
-	MessageID    string
-	SizeBytes    *int64
-	QueuedAs     string
-	MailID       string
-	Subject      string
-	Hits         *float64
-	Helo         string
-	AmavisOrigin string
-	Raw          string
-	RawHash      string
+	TSUTC        time.Time `json:"ts_utc"`
+	Host         string    `json:"host"`
+	Process      string    `json:"process"`
+	QueueID      string    `json:"queue_id"`
+	MailFrom     string    `json:"mail_from"`
+	MailTo       string    `json:"mail_to"`
+	Status       string    `json:"status"`
+	Relay        string    `json:"relay"`
+	Delay        *float64  `json:"delay,omitempty"`
+	Delays       string    `json:"delays"`
+	DSN          string    `json:"dsn"`
+	MessageID    string    `json:"message_id"`
+	SizeBytes    *int64    `json:"size_bytes,omitempty"`
+	QueuedAs     string    `json:"queued_as"`
+	MailID       string    `json:"mail_id"`
+	Subject      string    `json:"subject"`
+	Hits         *float64  `json:"hits,omitempty"`
+	Helo         string    `json:"helo"`
+	AmavisOrigin string    `json:"amavis_origin"`
+	IsJunk       bool      `json:"is_junk"`
+	SpamScore    *float64  `json:"spam_score,omitempty"`
+	Raw          string    `json:"raw"`
+	RawHash      string    `json:"raw_hash"`
 }
 
 // Example postfix lines:
@@ -52,6 +54,9 @@ var (
 	reAmavisHits     = regexp.MustCompile(`(?i)\bHits:\s*([-0-9.]+)`)
 	reAmavisHelo     = regexp.MustCompile(`(?i)\bhelo=([^\s,]+)`)
 	reAmavisOrigin   = regexp.MustCompile(`(?i)\{(RelayedInbound|RelayedInternal|RelayedOutbound)\}`)
+	reDovecotQueueID = regexp.MustCompile(`(?i)\bQueue-ID:\s*([A-Za-z0-9]+)`)
+	reDovecotLMTP    = regexp.MustCompile(`(?i)\bdovecot\b.*\blmtp(?:\([^)]*\))?`)
+	reDovecotJunk    = regexp.MustCompile(`(?i)\b(?:saved|stored|delivered)\b.*\b(?:Junk|Spam)\b`)
 )
 
 func ParseLine(line string, now time.Time, loc *time.Location) (*LogEntry, bool) {
@@ -194,6 +199,26 @@ func ParseLine(line string, now time.Time, loc *time.Location) (*LogEntry, bool)
 	if entry.AmavisOrigin == "" {
 		if m := reAmavisOrigin.FindStringSubmatch(payload); m != nil {
 			entry.AmavisOrigin = strings.TrimSpace(m[1])
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(process), "amavis[") {
+		lowerStatus := strings.ToLower(entry.Status)
+		if lowerStatus == "passed spam" || lowerStatus == "passed spammy" {
+			entry.IsJunk = true
+		}
+		if entry.Hits != nil {
+			score := *entry.Hits
+			entry.SpamScore = &score
+		}
+	}
+	if reDovecotLMTP.MatchString(process + " " + payload) {
+		if entry.QueueID == "" {
+			if m := reDovecotQueueID.FindStringSubmatch(payload); m != nil {
+				entry.QueueID = strings.TrimSpace(m[1])
+			}
+		}
+		if reDovecotJunk.MatchString(payload) {
+			entry.IsJunk = true
 		}
 	}
 
