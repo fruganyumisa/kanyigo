@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
 func main() {
 	var (
-		mode       = flag.String("mode", "serve", "mode: ingest or serve")
+		mode       = flag.String("mode", "serve", "mode: follow, init, health, or serve")
 		maillog    = flag.String("maillog", envOrDefault("MAILLOG_PATH", "/var/log/maillog"), "path to maillog")
 		dbURL      = flag.String("db", envOrDefault("DATABASE_URL", "postgres://logs:logs@localhost:5432/logs_dashboard?sslmode=disable"), "postgres connection string")
 		listenAddr = flag.String("listen", envOrDefault("LISTEN_ADDR", ":8080"), "http listen address")
@@ -38,53 +42,26 @@ func main() {
 	switch *mode {
 	case "init":
 		fmt.Println("database initialized")
-	case "ingest":
-		stats, err := IngestFile(db, *maillog)
-		if err != nil {
-			log.Fatalf("ingest: %v", err)
-		}
-		fmt.Printf("ingested=%d skipped=%d errors=%d\n", stats.Inserted, stats.Skipped, stats.Errors)
-	case "tail":
-		stats, err := IngestIncremental(db, *maillog)
-		if err != nil {
-			log.Fatalf("ingest: %v", err)
-		}
-		fmt.Printf("ingested=%d skipped=%d errors=%d\n", stats.Inserted, stats.Skipped, stats.Errors)
 	case "follow":
-		interval, err := time.ParseDuration(envOrDefault("INGEST_INTERVAL", "2m"))
+		cfg, err := streamConfig(*maillog)
 		if err != nil {
-			log.Fatalf("invalid INGEST_INTERVAL: %v", err)
+			log.Fatalf("ingest config: %v", err)
 		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			stats, err := IngestIncremental(db, *maillog)
-			if err != nil {
-				log.Printf("ingest: %v", err)
-			} else if stats.Inserted > 0 || stats.Errors > 0 {
-				log.Printf("ingested=%d skipped=%d errors=%d", stats.Inserted, stats.Skipped, stats.Errors)
-			}
-			<-ticker.C
-		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		runMailLogIngestorWithRetry(ctx, db, cfg)
 	case "serve":
 		server := NewServer(db)
 		go func() {
-			// optional periodic ingest when running in serve mode
 			if envOrDefault("AUTO_INGEST", "false") != "true" {
 				return
 			}
-			interval, err := time.ParseDuration(envOrDefault("INGEST_INTERVAL", "2m"))
+			cfg, err := streamConfig(*maillog)
 			if err != nil {
-				log.Printf("invalid INGEST_INTERVAL: %v", err)
+				log.Printf("ingest config: %v", err)
 				return
 			}
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			for range ticker.C {
-				if _, err := IngestIncremental(db, *maillog); err != nil {
-					log.Printf("ingest: %v", err)
-				}
-			}
+			runMailLogIngestorWithRetry(context.Background(), db, cfg)
 		}()
 		log.Printf("listening on %s", *listenAddr)
 		if err := server.ListenAndServe(*listenAddr); err != nil {
@@ -93,5 +70,39 @@ func main() {
 	default:
 		fmt.Fprintln(os.Stderr, "unknown mode")
 		os.Exit(2)
+	}
+}
+
+func streamConfig(path string) (StreamConfig, error) {
+	pollInterval, err := time.ParseDuration(envOrDefault("MAILLOG_POLL_INTERVAL", "250ms"))
+	if err != nil {
+		return StreamConfig{}, fmt.Errorf("invalid MAILLOG_POLL_INTERVAL: %w", err)
+	}
+	rotationDrainTimeout, err := time.ParseDuration(envOrDefault("MAILLOG_ROTATION_DRAIN_TIMEOUT", "1s"))
+	if err != nil {
+		return StreamConfig{}, fmt.Errorf("invalid MAILLOG_ROTATION_DRAIN_TIMEOUT: %w", err)
+	}
+	queueIdleTimeout, err := time.ParseDuration(envOrDefault("MAILLOG_QUEUE_IDLE_TIMEOUT", "30m"))
+	if err != nil {
+		return StreamConfig{}, fmt.Errorf("invalid MAILLOG_QUEUE_IDLE_TIMEOUT: %w", err)
+	}
+	return StreamConfig{
+		Path:                 path,
+		PollInterval:         pollInterval,
+		RotationDrainTimeout: rotationDrainTimeout,
+		QueueIdleTimeout:     queueIdleTimeout,
+	}, nil
+}
+
+func runMailLogIngestorWithRetry(ctx context.Context, db *sql.DB, cfg StreamConfig) {
+	for {
+		if err := RunMailLogIngestor(ctx, db, cfg); err != nil {
+			log.Printf("continuous maillog ingest: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
 	}
 }

@@ -64,6 +64,7 @@ type logRecord struct {
 	QueueID      string   `json:"queueId"`
 	Relay        string   `json:"relay"`
 	Delay        *float64 `json:"delay"`
+	Delays       string   `json:"delays"`
 	DSN          string   `json:"dsn"`
 	MessageID    string   `json:"messageId"`
 	SizeBytes    *int64   `json:"sizeBytes"`
@@ -73,6 +74,7 @@ type logRecord struct {
 	Hits         *float64 `json:"hits"`
 	Helo         string   `json:"helo"`
 	AmavisOrigin string   `json:"amavisOrigin"`
+	TimedOut     bool     `json:"timedOut"`
 	Raw          string   `json:"raw"`
 }
 
@@ -98,10 +100,10 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if from != "" {
-		where = append(where, "ts_utc >= "+addArg(normalizeTime(from)))
+		where = append(where, "arrival_ts_utc >= "+addArg(normalizeTime(from)))
 	}
 	if to != "" {
-		where = append(where, "ts_utc <= "+addArg(normalizeTime(to)))
+		where = append(where, "arrival_ts_utc <= "+addArg(normalizeTime(to)))
 	}
 	if sender != "" {
 		where = append(where, "mail_from ILIKE "+addArg("%"+sender+"%"))
@@ -119,17 +121,17 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	whereSQL := strings.Join(where, " AND ")
 
 	var total int
-	countSQL := "SELECT COUNT(*) FROM maillog_entries WHERE " + whereSQL
+	countSQL := "SELECT COUNT(*) FROM mail_transactions WHERE " + whereSQL
 	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
 	querySQL := `
-SELECT id, ts_utc, mail_from, mail_to, status, host, process, queue_id, relay, delay, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, raw
-FROM maillog_entries
+SELECT id, arrival_ts_utc, mail_from, mail_to, status, host, process, queue_id, relay, delay, delays, dsn, message_id, size_bytes, queued_as, mail_id, subject, hits, helo, amavis_origin, timed_out, raw
+FROM mail_transactions
 WHERE ` + whereSQL + `
-ORDER BY ts_utc DESC
+ORDER BY arrival_ts_utc DESC
 LIMIT ` + addArg(limit) + ` OFFSET ` + addArg(offset) + `;`
 
 	rows, err := s.db.Query(querySQL, args...)
@@ -153,7 +155,7 @@ LIMIT ` + addArg(limit) + ` OFFSET ` + addArg(offset) + `;`
 		var amavisOrigin sql.NullString
 		if err := rows.Scan(
 			&rec.ID, &ts, &rec.From, &rec.To, &rec.Status, &rec.Host, &rec.Process, &rec.QueueID,
-			&rec.Relay, &delay, &rec.DSN, &rec.MessageID, &size, &queuedAs, &mailID, &subject, &hits, &helo, &amavisOrigin, &rec.Raw,
+			&rec.Relay, &delay, &rec.Delays, &rec.DSN, &rec.MessageID, &size, &queuedAs, &mailID, &subject, &hits, &helo, &amavisOrigin, &rec.TimedOut, &rec.Raw,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

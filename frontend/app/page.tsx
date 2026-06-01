@@ -32,6 +32,7 @@ type LogRecord = {
   queueId: string;
   relay: string;
   delay: number | null;
+  delays: string;
   dsn: string;
   messageId: string;
   sizeBytes: number | null;
@@ -41,6 +42,7 @@ type LogRecord = {
   hits: number | null;
   helo: string;
   amavisOrigin: string;
+  timedOut: boolean;
   raw: string;
 };
 

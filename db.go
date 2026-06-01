@@ -57,6 +57,41 @@ CREATE INDEX IF NOT EXISTS idx_maillog_to ON maillog_entries(mail_to);
 CREATE INDEX IF NOT EXISTS idx_maillog_status ON maillog_entries(status);
 CREATE INDEX IF NOT EXISTS idx_maillog_queue ON maillog_entries(queue_id);
 
+CREATE TABLE IF NOT EXISTS mail_transactions (
+	id BIGSERIAL PRIMARY KEY,
+	arrival_ts_utc TIMESTAMPTZ NOT NULL,
+	last_ts_utc TIMESTAMPTZ NOT NULL,
+	queue_id TEXT NOT NULL,
+	host TEXT NOT NULL DEFAULT '',
+	process TEXT NOT NULL DEFAULT '',
+	mail_from TEXT NOT NULL DEFAULT '',
+	mail_to TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT '',
+	relay TEXT NOT NULL DEFAULT '',
+	delay REAL,
+	delays TEXT NOT NULL DEFAULT '',
+	dsn TEXT NOT NULL DEFAULT '',
+	message_id TEXT NOT NULL DEFAULT '',
+	size_bytes INTEGER,
+	queued_as TEXT NOT NULL DEFAULT '',
+	mail_id TEXT NOT NULL DEFAULT '',
+	subject TEXT NOT NULL DEFAULT '',
+	hits REAL,
+	helo TEXT NOT NULL DEFAULT '',
+	amavis_origin TEXT NOT NULL DEFAULT '',
+	raw TEXT NOT NULL DEFAULT '',
+	terminal BOOLEAN NOT NULL DEFAULT FALSE,
+	timed_out BOOLEAN NOT NULL DEFAULT FALSE,
+	updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mail_transactions_arrival ON mail_transactions(arrival_ts_utc);
+CREATE INDEX IF NOT EXISTS idx_mail_transactions_from ON mail_transactions(mail_from);
+CREATE INDEX IF NOT EXISTS idx_mail_transactions_to ON mail_transactions(mail_to);
+CREATE INDEX IF NOT EXISTS idx_mail_transactions_status ON mail_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_mail_transactions_queue ON mail_transactions(queue_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_transactions_active_queue ON mail_transactions(queue_id) WHERE terminal = FALSE;
+
 CREATE TABLE IF NOT EXISTS ingest_state (
 	key TEXT PRIMARY KEY,
 	offset_bytes BIGINT NOT NULL,

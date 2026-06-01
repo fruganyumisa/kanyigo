@@ -88,12 +88,7 @@ func ParseLine(line string, now time.Time, loc *time.Location) (*LogEntry, bool)
 		if err != nil {
 			return nil, false
 		}
-		year := now.In(loc).Year()
-		ts = time.Date(year, month.Month(), day, parsedTime.Hour(), parsedTime.Minute(), parsedTime.Second(), 0, loc)
-		// handle year rollover: if ts is in the future by more than 24h, move back one year
-		if ts.After(now.Add(24 * time.Hour)) {
-			ts = ts.AddDate(-1, 0, 0)
-		}
+		ts = inferLegacyTimestamp(now, loc, month.Month(), day, parsedTime).UTC()
 	} else {
 		return nil, false
 	}
@@ -205,4 +200,25 @@ func ParseLine(line string, now time.Time, loc *time.Location) (*LogEntry, bool)
 	h := sha256.Sum256([]byte(line))
 	entry.RawHash = hex.EncodeToString(h[:])
 	return entry, true
+}
+
+func inferLegacyTimestamp(now time.Time, loc *time.Location, month time.Month, day int, clock time.Time) time.Time {
+	localNow := now.In(loc)
+	best := time.Date(localNow.Year(), month, day, clock.Hour(), clock.Minute(), clock.Second(), 0, loc)
+	bestDistance := absDuration(best.Sub(localNow))
+	for _, year := range []int{localNow.Year() - 1, localNow.Year() + 1} {
+		candidate := time.Date(year, month, day, clock.Hour(), clock.Minute(), clock.Second(), 0, loc)
+		if distance := absDuration(candidate.Sub(localNow)); distance < bestDistance {
+			best = candidate
+			bestDistance = distance
+		}
+	}
+	return best
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
