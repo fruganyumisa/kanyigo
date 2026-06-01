@@ -21,6 +21,7 @@ services:
   api:
     build:
       context: .
+      network: host
     restart: unless-stopped
     dns:
       - 8.8.8.8
@@ -50,6 +51,7 @@ services:
   frontend:
     build:
       context: ./frontend
+      network: host
     restart: unless-stopped
     dns:
       - 8.8.8.8
