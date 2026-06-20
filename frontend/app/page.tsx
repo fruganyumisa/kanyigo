@@ -18,6 +18,9 @@ import {
   Shield,
   UserPlus,
   Users,
+	ShieldAlert,
+	Ban,
+	Unlock,
   XCircle,
 } from "@/components/icons";
 
@@ -58,6 +61,25 @@ type User = {
   createdAt?: string;
 };
 
+type SecurityOffender = {
+  ip: string;
+  reason: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  attemptCount: number;
+  lastPath: string;
+  flagged: boolean;
+  blocked: boolean;
+  blockedAt: string | null;
+  expiresAt: string | null;
+  lastError: string;
+};
+
+type SecurityResponse = {
+  items: SecurityOffender[];
+  summary: { flagged: number; blocked: number; attemptsToday: number; firewallHealthy: boolean };
+};
+
 type Filters = {
   sender: string;
   receiver: string;
@@ -76,7 +98,7 @@ const initialFilters: Filters = {
 
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "users">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "users" | "security">("dashboard");
   const [authLoading, setAuthLoading] = useState(true);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -93,6 +115,12 @@ export default function Dashboard() {
   const [data, setData] = useState<LogsResponse>({ total: 0, items: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [security, setSecurity] = useState<SecurityResponse>({
+    items: [],
+    summary: { flagged: 0, blocked: 0, attemptsToday: 0, firewallHealthy: false },
+  });
+  const [securityLoading, setSecurityLoading] = useState(false);
+  const [securityError, setSecurityError] = useState("");
 
   useEffect(() => {
     fetch("/api/auth/me", { cache: "no-store" })
@@ -146,6 +174,10 @@ export default function Dashboard() {
     }
     loadUsers();
   }, [user]);
+
+  useEffect(() => {
+    if (user?.role === "admin" && activeTab === "security") loadSecurity();
+  }, [activeTab, user]);
 
   const stats = useMemo(() => {
     const sent = data.items.filter((item) => item.status === "sent").length;
@@ -241,6 +273,49 @@ export default function Dashboard() {
     setNewUser({ email: "", password: "", role: "user" });
     await loadUsers();
     setIsCreatingUser(false);
+  }
+
+  async function loadSecurity() {
+    setSecurityLoading(true);
+    setSecurityError("");
+    const response = await fetch("/api/security", { cache: "no-store" });
+    if (!response.ok) {
+      setSecurityError("Unable to load brute-force detections.");
+      setSecurityLoading(false);
+      return;
+    }
+    setSecurity((await response.json()) as SecurityResponse);
+    setSecurityLoading(false);
+  }
+
+  async function changeFirewallBlock(ip: string, blocked: boolean, durationSeconds = 86400) {
+    const action = blocked ? "block" : "unblock";
+    if (!window.confirm(`${action === "block" ? "Block" : "Unblock"} ${ip}?`)) return;
+    setSecurityError("");
+    const response = await fetch("/api/security/block", {
+      method: blocked ? "POST" : "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip, durationSeconds }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ error: "Firewall operation failed." }));
+      setSecurityError(payload.error ?? "Firewall operation failed.");
+      return;
+    }
+    await loadSecurity();
+  }
+
+  async function dismissOffender(ip: string) {
+    const response = await fetch("/api/security/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip }),
+    });
+    if (!response.ok) {
+      setSecurityError("Unable to dismiss offender.");
+      return;
+    }
+    await loadSecurity();
   }
 
   if (authLoading) {
@@ -349,6 +424,12 @@ export default function Dashboard() {
               <span>Users</span>
             </button>
           ) : null}
+          {user.role === "admin" ? (
+            <button className={activeTab === "security" ? "active" : ""} onClick={() => setActiveTab("security")}>
+              <ShieldAlert className="icon" />
+              <span>Brute Force</span>
+            </button>
+          ) : null}
         </nav>
 
         <div className="sidebar-footer">
@@ -411,6 +492,18 @@ export default function Dashboard() {
             onCreateUser={createDashboardUser}
             onLoadUsers={loadUsers}
             onSetNewUser={setNewUser}
+          />
+        ) : null}
+
+        {user.role === "admin" && activeTab === "security" ? (
+          <SecurityView
+            data={security}
+            error={securityError}
+            loading={securityLoading}
+            onBlock={(ip, duration) => changeFirewallBlock(ip, true, duration)}
+            onDismiss={dismissOffender}
+            onRefresh={loadSecurity}
+            onUnblock={(ip) => changeFirewallBlock(ip, false)}
           />
         ) : null}
         </div>
@@ -604,6 +697,105 @@ function DashboardView({
   );
 }
 
+function SecurityView({
+  data,
+  error,
+  loading,
+  onBlock,
+  onDismiss,
+  onRefresh,
+  onUnblock,
+}: {
+  data: SecurityResponse;
+  error: string;
+  loading: boolean;
+  onBlock: (ip: string, durationSeconds: number) => void;
+  onDismiss: (ip: string) => void;
+  onRefresh: () => void;
+  onUnblock: (ip: string) => void;
+}) {
+  const [duration, setDuration] = useState(86400);
+  return (
+    <section className="security-layout">
+      <section className="metric-grid security-metrics">
+        <MetricCard label="Flagged IPs" value={data.summary.flagged.toLocaleString()} icon={<ShieldAlert className="icon" />} tone="danger" />
+        <MetricCard label="Blocked IPs" value={data.summary.blocked.toLocaleString()} icon={<Ban className="icon" />} tone="warning" />
+        <MetricCard label="Suspicious Today" value={data.summary.attemptsToday.toLocaleString()} icon={<Activity className="icon" />} />
+        <MetricCard
+          label="Firewall Agent"
+          value={data.summary.firewallHealthy ? "Online" : "Unavailable"}
+          icon={data.summary.firewallHealthy ? <CheckCircle2 className="icon" /> : <XCircle className="icon" />}
+          tone={data.summary.firewallHealthy ? "success" : "danger"}
+        />
+      </section>
+
+      <section className="panel table-panel">
+        <div className="table-toolbar security-toolbar">
+          <div>
+            <h3>Brute-force and scanning activity</h3>
+            <p>IPs are flagged after 10 consecutive 404 responses or repeated authentication failures.</p>
+          </div>
+          <div className="security-actions">
+            <select aria-label="Block duration" value={duration} onChange={(event) => setDuration(Number(event.target.value))}>
+              <option value={3600}>Block 1 hour</option>
+              <option value={86400}>Block 24 hours</option>
+              <option value={604800}>Block 7 days</option>
+              <option value={0}>Block permanently</option>
+            </select>
+            <button className="secondary-button" onClick={onRefresh} disabled={loading}>
+              {loading ? <Loader2 className="icon spin" /> : <Activity className="icon" />} Refresh
+            </button>
+          </div>
+        </div>
+        {error ? <InlineNotice tone="danger" icon={<XCircle className="icon" />} text={error} /> : null}
+        {!data.summary.firewallHealthy ? (
+          <InlineNotice tone="danger" icon={<ShieldAlert className="icon" />} text="Firewall agent is unavailable. Detection continues, but block actions will fail." />
+        ) : null}
+        <div className="table-scroll">
+          <table className="events-table security-table">
+            <thead>
+              <tr>
+                <th>IP address</th>
+                <th>Detection</th>
+                <th>Attempts</th>
+                <th>Last path</th>
+                <th>Last seen</th>
+                <th>State</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!loading && data.items.length === 0 ? (
+                <tr><td colSpan={7}><div className="empty-state"><Shield className="icon-lg" /><strong>No flagged IPs</strong><span>No Nginx brute-force or scanning thresholds have been reached.</span></div></td></tr>
+              ) : data.items.map((item) => (
+                <tr key={item.ip}>
+                  <td><code>{item.ip}</code></td>
+                  <td><strong className="cell-main">{item.reason === "consecutive_404" ? "Consecutive 404s" : "Authentication failures"}</strong></td>
+                  <td>{item.attemptCount}</td>
+                  <td title={item.lastPath}><span className="truncate">{item.lastPath || "-"}</span></td>
+                  <td><strong className="cell-main">{formatTime(item.lastSeenAt)}</strong><span className="cell-sub">{relativeTime(item.lastSeenAt)}</span></td>
+                  <td><StatusBadge status={item.blocked ? "blocked" : item.flagged ? "flagged" : "dismissed"} /></td>
+                  <td>
+                    <div className="row-actions">
+                      {item.blocked ? (
+                        <button className="secondary-button compact" onClick={() => onUnblock(item.ip)}><Unlock className="icon" /> Unblock</button>
+                      ) : (
+                        <button className="primary-button compact" disabled={!data.summary.firewallHealthy} onClick={() => onBlock(item.ip, duration)}><Ban className="icon" /> Block</button>
+                      )}
+                      {item.flagged && !item.blocked ? <button className="secondary-button compact" onClick={() => onDismiss(item.ip)}>Dismiss</button> : null}
+                    </div>
+                    {item.lastError ? <span className="cell-error">{item.lastError}</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function UsersView({
   isCreatingUser,
   newUser,
@@ -739,7 +931,7 @@ function DelayBadge({ delay }: { delay: number | null }) {
 
 function getStatusVariant(status: string): "success" | "warning" | "danger" | "muted" {
   if (status === "sent" || status === "passed clean") return "success";
-  if (status === "deferred") return "warning";
+  if (status === "deferred" || status === "flagged") return "warning";
   if (status === "bounced" || status === "rejected" || status.startsWith("blocked")) return "danger";
   return "muted";
 }

@@ -986,6 +986,50 @@ table {
   padding: 20px;
 }
 
+.security-layout {
+  display: grid;
+  gap: 18px;
+}
+
+.security-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.security-toolbar,
+.security-actions,
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.security-toolbar {
+  justify-content: space-between;
+}
+
+.security-actions select {
+  width: 180px;
+}
+
+.security-table {
+  min-width: 1120px;
+  table-layout: auto;
+}
+
+.security-table td:last-child {
+  min-width: 230px;
+}
+
+.cell-error {
+  display: block;
+  max-width: 240px;
+  margin-top: 6px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .user-form {
   display: grid;
   gap: 14px;
@@ -1059,6 +1103,10 @@ table {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .security-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .filter-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1087,7 +1135,7 @@ table {
   }
 
   .sidebar-nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .sidebar-footer {
@@ -1124,6 +1172,17 @@ table {
   .metric-grid,
   .filter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .security-toolbar,
+  .security-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .security-actions select,
+  .security-actions button {
+    width: 100%;
   }
 
   .filter-actions,

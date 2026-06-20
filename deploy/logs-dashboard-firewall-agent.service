@@ -1,0 +1,26 @@
+[Unit]
+Description=Logs Dashboard firewall agent
+After=network-pre.target
+Before=nginx.service docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/logs-dashboard-firewall-agent
+Environment=FIREWALL_AGENT_SOCKET=/run/logs-dashboard/firewall.sock
+Environment=FIREWALL_CHAIN=INPUT
+Environment=FIREWALL_IP_ALLOWLIST=127.0.0.0/8,::1/128
+RuntimeDirectory=logs-dashboard
+RuntimeDirectoryMode=0750
+User=root
+Group=logs-dashboard
+UMask=0007
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

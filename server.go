@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,14 +13,23 @@ import (
 )
 
 type Server struct {
-	db             *sql.DB
-	allowedOrigins map[string]bool
+	db                *sql.DB
+	allowedOrigins    map[string]bool
+	firewall          *FirewallClient
+	securityAllowlist []*net.IPNet
 }
 
 func NewServer(db *sql.DB) *Server {
+	allowlist, err := parseCIDRs(envOrDefault("SECURITY_IP_ALLOWLIST", "127.0.0.0/8,::1/128"))
+	if err != nil {
+		log.Printf("invalid SECURITY_IP_ALLOWLIST: %v", err)
+		allowlist, _ = parseCIDRs("127.0.0.0/8,::1/128")
+	}
 	return &Server{
-		db:             db,
-		allowedOrigins: parseAllowedOrigins(envOrDefault("ALLOWED_ORIGINS", "http://localhost:3000")),
+		db:                db,
+		allowedOrigins:    parseAllowedOrigins(envOrDefault("ALLOWED_ORIGINS", "http://localhost:3000")),
+		firewall:          NewFirewallClient(envOrDefault("FIREWALL_AGENT_SOCKET", "")),
+		securityAllowlist: allowlist,
 	}
 }
 
@@ -31,6 +41,9 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleMe))
 	mux.HandleFunc("/api/users", s.requireAuth(s.handleUsers))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
+	mux.HandleFunc("/api/security", s.requireAuth(s.handleSecurity))
+	mux.HandleFunc("/api/security/block", s.requireAuth(s.handleSecurityBlock))
+	mux.HandleFunc("/api/security/dismiss", s.requireAuth(s.handleSecurityDismiss))
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           s.withCORS(withSecurityHeaders(withLogging(mux))),
@@ -241,7 +254,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -301,9 +314,8 @@ func clientIP(r *http.Request) string {
 	if xri != "" {
 		return xri
 	}
-	host := r.RemoteAddr
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		return host[:idx]
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	return host
+	return strings.Trim(r.RemoteAddr, "[]")
 }

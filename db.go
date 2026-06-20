@@ -103,6 +103,69 @@ CREATE TABLE IF NOT EXISTS ingest_state (
 	updated_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS nginx_security_events (
+	id BIGSERIAL PRIMARY KEY,
+	ts_utc TIMESTAMPTZ NOT NULL,
+	remote_ip TEXT NOT NULL,
+	method TEXT NOT NULL DEFAULT '',
+	path TEXT NOT NULL DEFAULT '',
+	status INTEGER NOT NULL,
+	user_agent TEXT NOT NULL DEFAULT '',
+	raw TEXT NOT NULL,
+	raw_hash TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_nginx_security_events_ts ON nginx_security_events(ts_utc);
+CREATE INDEX IF NOT EXISTS idx_nginx_security_events_ip_ts ON nginx_security_events(remote_ip, ts_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_nginx_security_events_status_ts ON nginx_security_events(status, ts_utc DESC);
+
+CREATE TABLE IF NOT EXISTS nginx_ip_detection_state (
+	remote_ip TEXT PRIMARY KEY,
+	consecutive_404 INTEGER NOT NULL DEFAULT 0,
+	streak_started_at TIMESTAMPTZ,
+	last_seen_at TIMESTAMPTZ NOT NULL,
+	last_status INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS security_offenders (
+	remote_ip TEXT PRIMARY KEY,
+	reason TEXT NOT NULL,
+	first_seen_at TIMESTAMPTZ NOT NULL,
+	last_seen_at TIMESTAMPTZ NOT NULL,
+	attempt_count INTEGER NOT NULL,
+	last_path TEXT NOT NULL DEFAULT '',
+	flagged BOOLEAN NOT NULL DEFAULT TRUE,
+	dismissed_at TIMESTAMPTZ,
+	updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_offenders_last_seen ON security_offenders(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_offenders_flagged ON security_offenders(flagged, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS firewall_blocks (
+	remote_ip TEXT PRIMARY KEY,
+	active BOOLEAN NOT NULL DEFAULT FALSE,
+	blocked_at TIMESTAMPTZ,
+	expires_at TIMESTAMPTZ,
+	blocked_by BIGINT,
+	last_error TEXT NOT NULL DEFAULT '',
+	updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_firewall_blocks_active ON firewall_blocks(active, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS security_audit_log (
+	id BIGSERIAL PRIMARY KEY,
+	ts_utc TIMESTAMPTZ NOT NULL,
+	actor_user_id BIGINT,
+	action TEXT NOT NULL,
+	remote_ip TEXT NOT NULL DEFAULT '',
+	detail TEXT NOT NULL DEFAULT '',
+	success BOOLEAN NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_audit_ts ON security_audit_log(ts_utc DESC);
+
 CREATE TABLE IF NOT EXISTS dashboard_users (
 	id BIGSERIAL PRIMARY KEY,
 	email TEXT NOT NULL UNIQUE,
@@ -125,6 +188,9 @@ CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expires ON dashboard_sessions(
 `
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE nginx_security_events DROP CONSTRAINT IF EXISTS nginx_security_events_raw_hash_key;`); err != nil {
+		return fmt.Errorf("drop legacy nginx raw hash uniqueness: %w", err)
 	}
 	if err := ensureColumns(db, "maillog_entries", []string{
 		"queued_as", "mail_id", "subject", "hits", "helo", "amavis_origin", "is_junk", "spam_score",

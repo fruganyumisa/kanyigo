@@ -82,6 +82,67 @@ sudo usermod -aG adm logs-dashboard
 # Some distributions use a "log" group instead of "adm".
 ```
 
+## Nginx brute-force monitoring
+
+The API continuously reads the Nginx access log when
+`AUTO_NGINX_SECURITY_INGEST=true`. It flags an IP after 10 consecutive `404`
+responses within two minutes. A `200`, redirect, or any other non-404 response
+resets that IP's streak. Ten `401`/`403` responses within five minutes are also
+flagged. Thresholds, windows, ignored paths, trusted proxies, and protected IPs
+are configurable through the `BRUTEFORCE_*`, `TRUSTED_PROXY_CIDRS`, and
+`SECURITY_IP_ALLOWLIST` variables in `docker-compose.yml`.
+
+JSON access logs are recommended:
+
+```nginx
+log_format dashboard_json escape=json '{'
+  '"time_iso8601":"$time_iso8601",'
+  '"remote_addr":"$remote_addr",'
+  '"http_x_forwarded_for":"$http_x_forwarded_for",'
+  '"request_method":"$request_method",'
+  '"uri":"$request_uri",'
+  '"status":$status,'
+  '"http_user_agent":"$http_user_agent"'
+'}';
+access_log /var/log/nginx/access.log dashboard_json;
+```
+
+The parser also accepts the standard Nginx combined format. Grant the API's
+non-root account read access to this log using the same ACL/group approach used
+for `/var/log/maillog`.
+
+## Firewall agent
+
+The API never receives root or `CAP_NET_ADMIN`. Blocking is performed by a
+small host agent over a protected Unix socket:
+
+```bash
+sudo groupadd --system logs-dashboard 2>/dev/null || true
+go build -o /tmp/logs-dashboard-firewall-agent ./cmd/firewall-agent
+sudo install -o root -g root -m 0755 /tmp/logs-dashboard-firewall-agent /usr/local/sbin/logs-dashboard-firewall-agent
+sudo install -o root -g root -m 0644 deploy/logs-dashboard-firewall-agent.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now logs-dashboard-firewall-agent
+```
+
+Install the host packages that provide `ipset`, `iptables`, and `ip6tables`.
+For a host-installed Nginx, keep `FIREWALL_CHAIN=INPUT`. If Nginx is published
+through Docker, use `FIREWALL_CHAIN=DOCKER-USER` and order the agent after
+`docker.service` with a systemd override. Set `HOST_ACCESS_GID` in Compose to
+the numeric GID of the `logs-dashboard` host group so the non-root API can use
+the socket:
+
+```bash
+getent group logs-dashboard
+```
+
+Set the agent's `FIREWALL_IP_ALLOWLIST` to the same protected networks as the
+API's `SECURITY_IP_ALLOWLIST`. The agent enforces its own allowlist even if a
+different local process gains access to the Unix socket.
+
+Only one API replica should ingest Nginx logs. Additional replicas should set
+`AUTO_NGINX_SECURITY_INGEST=false`.
+
 ## API
 
 `GET /api/logs`

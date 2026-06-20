@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -66,6 +68,17 @@ func main() {
 			}
 			runMailLogIngestorWithRetry(context.Background(), db, cfg)
 		}()
+		go func() {
+			if envOrDefault("AUTO_NGINX_SECURITY_INGEST", "false") != "true" {
+				return
+			}
+			cfg, err := nginxSecurityConfig()
+			if err != nil {
+				log.Printf("nginx security ingest config: %v", err)
+				return
+			}
+			runNginxSecurityIngestorWithRetry(context.Background(), db, cfg)
+		}()
 		log.Printf("listening on %s", *listenAddr)
 		if err := server.ListenAndServe(*listenAddr); err != nil {
 			log.Fatalf("serve: %v", err)
@@ -74,6 +87,50 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unknown mode")
 		os.Exit(2)
 	}
+}
+
+func nginxSecurityConfig() (NginxSecurityConfig, error) {
+	pollInterval, err := time.ParseDuration(envOrDefault("NGINX_LOG_POLL_INTERVAL", "250ms"))
+	if err != nil {
+		return NginxSecurityConfig{}, fmt.Errorf("invalid NGINX_LOG_POLL_INTERVAL: %w", err)
+	}
+	rotationDrainTimeout, err := time.ParseDuration(envOrDefault("NGINX_LOG_ROTATION_DRAIN_TIMEOUT", "1s"))
+	if err != nil {
+		return NginxSecurityConfig{}, fmt.Errorf("invalid NGINX_LOG_ROTATION_DRAIN_TIMEOUT: %w", err)
+	}
+	consecutiveWindow, err := time.ParseDuration(envOrDefault("BRUTEFORCE_404_WINDOW", "2m"))
+	if err != nil {
+		return NginxSecurityConfig{}, fmt.Errorf("invalid BRUTEFORCE_404_WINDOW: %w", err)
+	}
+	authWindow, err := time.ParseDuration(envOrDefault("BRUTEFORCE_AUTH_WINDOW", "5m"))
+	if err != nil {
+		return NginxSecurityConfig{}, fmt.Errorf("invalid BRUTEFORCE_AUTH_WINDOW: %w", err)
+	}
+	trustedProxies, err := parseCIDRs(envOrDefault("TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"))
+	if err != nil {
+		return NginxSecurityConfig{}, err
+	}
+	ignoredPaths := make(map[string]bool)
+	for _, path := range strings.Split(envOrDefault("BRUTEFORCE_404_IGNORED_PATHS", "/favicon.ico,/robots.txt,/api/health"), ",") {
+		if path = strings.TrimSpace(path); path != "" {
+			ignoredPaths[path] = true
+		}
+	}
+	cfg := NginxSecurityConfig{
+		Path:                    envOrDefault("NGINX_ACCESS_LOG_PATH", "/var/log/nginx/access.log"),
+		PollInterval:            pollInterval,
+		RotationDrainTimeout:    rotationDrainTimeout,
+		Consecutive404Threshold: envInt("BRUTEFORCE_404_CONSECUTIVE_THRESHOLD", 10),
+		Consecutive404Window:    consecutiveWindow,
+		AuthFailureThreshold:    envInt("BRUTEFORCE_AUTH_THRESHOLD", 10),
+		AuthFailureWindow:       authWindow,
+		IgnoredPaths:            ignoredPaths,
+		TrustedProxyCIDRs:       trustedProxies,
+	}
+	if cfg.Consecutive404Threshold <= 0 || cfg.AuthFailureThreshold <= 0 || cfg.Consecutive404Window <= 0 || cfg.AuthFailureWindow <= 0 {
+		return NginxSecurityConfig{}, errors.New("nginx security thresholds and windows must be positive")
+	}
+	return cfg, nil
 }
 
 func streamConfig(path string) (StreamConfig, error) {
@@ -108,6 +165,19 @@ func runMailLogIngestorWithRetry(ctx context.Context, db *sql.DB, cfg StreamConf
 	for {
 		if err := RunMailLogIngestor(ctx, db, cfg); err != nil {
 			log.Printf("continuous maillog ingest: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func runNginxSecurityIngestorWithRetry(ctx context.Context, db *sql.DB, cfg NginxSecurityConfig) {
+	for {
+		if err := RunNginxSecurityIngestor(ctx, db, cfg); err != nil {
+			log.Printf("continuous nginx security ingest: %v", err)
 		}
 		select {
 		case <-ctx.Done():

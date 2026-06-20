@@ -19,6 +19,9 @@ import {
   Eye,
   EyeOff,
   Loader2,
+	ShieldAlert,
+	Ban,
+	Unlock,
 } from "lucide-react";
 
 export {
@@ -39,5 +42,8 @@ export {
   Eye,
   EyeOff,
   Loader2,
+	ShieldAlert,
+	Ban,
+	Unlock,
   cn,
 };
